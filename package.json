@@ -1,0 +1,16 @@
+{
+  "name": "fb-ai-bot",
+  "version": "1.0.0",
+  "description": "Facebook Auto Comment Bot via Cron",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.2.0",
+    "dotenv": "^16.4.5",
+    "mongoose": "^8.3.0",
+    "puppeteer": "^22.6.0"
+  }
+}
+
