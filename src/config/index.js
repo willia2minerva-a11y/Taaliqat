@@ -1,16 +1,11 @@
 require('dotenv').config();
 
 module.exports = {
-  GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+  PORT: process.env.PORT || 10000,
   MONGO_URI: process.env.MONGO_URI,
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY,
   FB_GROUP_URL: process.env.FB_GROUP_URL,
-  FIXED_COMMENT: process.env.FIXED_COMMENT || "رائع جداً!",
-  
-  TIMING: {
-    COMMENT_DELAY_MIN: 3000,
-    COMMENT_DELAY_MAX: 6000,
-    POST_DELAY_MIN: 10000,
-    POST_DELAY_MAX: 15000,
-  }
+  FB_PAGE_ACCESS_TOKEN: process.env.FB_PAGE_ACCESS_TOKEN,
+  FB_VERIFY_TOKEN: process.env.FB_VERIFY_TOKEN,
+  ADMIN_FB_ID: process.env.ADMIN_FB_ID,
 };
-
