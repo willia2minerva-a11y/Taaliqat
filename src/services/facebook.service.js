@@ -1,7 +1,5 @@
 const puppeteer = require('puppeteer');
-const fs = require('fs');
-const path = require('path');
-const { FB_GROUP_URL, TIMING } = require('../config');
+const { FB_GROUP_URL } = require('../config');
 
 class FacebookService {
   constructor() {
@@ -14,58 +12,92 @@ class FacebookService {
     return new Promise(resolve => setTimeout(resolve, delay));
   }
 
-  async init() {
+  async init(cookieData) {
     this.browser = await puppeteer.launch({
-      headless: true, // يجب أن يكون true ليعمل على Render
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--disable-gpu'
+      ]
     });
     this.page = await this.browser.newPage();
     
-    // حقن الكوكيز لتخطي تسجيل الدخول
-    const cookiesPath = path.join(__dirname, '../../cookies.json');
-    if (fs.existsSync(cookiesPath)) {
-      const cookiesString = fs.readFileSync(cookiesPath);
-      const cookies = JSON.parse(cookiesString);
-      await this.page.setCookie(...cookies);
-      console.log('✅ تم حقن الكوكيز بنجاح.');
+    // ضبط العرض والارتفاع لمنع اكتشاف الأتمتة
+    await this.page.setViewport({ width: 1280, height: 800 });
+
+    if (cookieData && Array.isArray(cookieData)) {
+      await this.page.setCookie(...cookieData);
     } else {
-      console.warn('⚠️ تحذير: ملف cookies.json غير موجود.');
+      throw new Error('بيانات الكوكيز المقدمة غير صالحة.');
     }
   }
 
   async goToGroup() {
-    await this.page.goto(FB_GROUP_URL, { waitUntil: 'networkidle2' });
+    await this.page.goto(FB_GROUP_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+    
+    // الفحص عن ما إذا كان الحساب قد سجل خروجه
+    const isLoginPage = await this.page.evaluate(() => {
+      return document.querySelector('input[id="email"]') !== null || document.title.includes('Log in');
+    });
+
+    if (isLoginPage) {
+      throw new Error('SESSION_EXPIRED: الكوكيز منتهي الصلاحية وحساب فيسبوك يتطلب تسجيل الدخول.');
+    }
   }
 
-  async processPost(postElement, smartComment, fixedComment) {
+  async extractFeedPosts() {
+    // استخراج المنشورات الموجودة في الصفحة الحالية
+    return await this.page.evaluate(() => {
+      const articles = Array.from(document.querySelectorAll('div[role="article"]'));
+      return articles.map((art, index) => {
+        const text = art.innerText || '';
+        return { index, textSnippet: text.substring(0, 150) };
+      }).filter(p => p.textSnippet.length > 15);
+    });
+  }
+
+  async postComments(postIndex, aiComment, fixedComment) {
     try {
-      // TODO: يجب تحديث هذه المحددات (Selectors) بناءً على تحديثات واجهة فيسبوك الحالية
-      const commentBoxSelector = 'div[aria-label="Write a comment"]'; 
-      
-      // النقر على مربع التعليق
-      await postElement.click(commentBoxSelector);
+      const articles = await this.page.$$('div[role="article"]');
+      if (!articles[postIndex]) return false;
+
+      const postElement = articles[postIndex];
+
+      // البحث عن مربع التعليق
+      const commentBoxSelector = 'div[aria-label="Write a comment"], div[aria-label="كتابة تعليق"]';
+      await postElement.waitForSelector(commentBoxSelector, { timeout: 5000 });
+      const commentBox = await postElement.$(commentBoxSelector);
+
+      if (!commentBox) return false;
+
+      // 1. التعليق الأول (AI)
+      await commentBox.click();
       await this.randomDelay(1000, 2000);
-      
-      // التعليق الأول
-      await this.page.keyboard.type(smartComment, { delay: 50 });
+      await this.page.keyboard.type(aiComment, { delay: 40 });
       await this.page.keyboard.press('Enter');
-      
-      await this.randomDelay(TIMING.COMMENT_DELAY_MIN, TIMING.COMMENT_DELAY_MAX);
-      
-      // التعليق الثاني
-      await postElement.click(commentBoxSelector);
-      await this.page.keyboard.type(fixedComment, { delay: 50 });
+
+      await this.randomDelay(3000, 5000);
+
+      // 2. التعليق الثاني (الجامد)
+      await commentBox.click();
+      await this.randomDelay(1000, 2000);
+      await this.page.keyboard.type(fixedComment, { delay: 40 });
       await this.page.keyboard.press('Enter');
-      
+
       return true;
-    } catch (error) {
-      console.error('[FB] خطأ أثناء التعليق:', error.message);
-      return false;
+    } catch (err) {
+      throw new Error(`خطأ أثناء إضافة التعليقات: ${err.message}`);
     }
   }
 
   async close() {
-    if (this.browser) await this.browser.close();
+    if (this.browser) {
+      await this.browser.close().catch(() => {});
+    }
   }
 }
+
 module.exports = FacebookService;
