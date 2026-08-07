@@ -1,21 +1,19 @@
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { GEMINI_API_KEY } = require('../config');
+const mongoose = require('mongoose');
+const { MONGO_URI } = require('../config');
 
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-
-class AiService {
-  static async generateComment(postText) {
+class DbService {
+  static async connect() {
     try {
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-      const prompt = `أنت مستخدم حقيقي في مجموعة فيسبوك. اقرأ المنشور التالي واكتب تعليقاً بشرياً ومنطقياً لا يتجاوز 15 كلمة ولا يقل عن 5 كلمات. المنشور: "${postText}"`;
-      
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      return response.text().trim();
+      if (!MONGO_URI) {
+        throw new Error("MONGO_URI غير معرف في متغيرات البيئة.");
+      }
+      await mongoose.connect(MONGO_URI);
+      console.log('✅ Connected to MongoDB Atlas.');
     } catch (error) {
-      console.error('[AI Service Error]:', error.message);
-      return "منشور مميز، شكراً للمشاركة معنا."; // Fallback
+      console.error('❌ MongoDB Connection Failure:', error.message);
+      process.exit(1);
     }
   }
 }
-module.exports = AiService;
+
+module.exports = DbService;
