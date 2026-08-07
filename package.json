@@ -1,16 +1,17 @@
 {
-  "name": "fb-ai-bot",
-  "version": "1.0.0",
-  "description": "Facebook Auto Comment Bot via Cron",
-  "main": "src/index.js",
+  "name": "fb-ai-automation-system",
+  "version": "2.0.0",
+  "description": "Production-grade Facebook Group Auto-Commenter controlled via Messenger Webhook",
+  "main": "src/server.js",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/server.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.2.0",
+    "axios": "^1.6.8",
     "dotenv": "^16.4.5",
+    "express": "^4.19.2",
     "mongoose": "^8.3.0",
     "puppeteer": "^22.6.0"
   }
 }
-
