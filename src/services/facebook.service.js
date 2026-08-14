@@ -74,7 +74,6 @@ class FacebookService {
           .filter(href => href && (href.includes('/story.php') || href.includes('/groups/') || href.includes('/posts/')));
       });
 
-      // تنقية الروابط واستبعاد المزارة سابقاً
       const cleanLinks = [...new Set(extractedLinks.map(l => l.split('?')[0]))];
       const newPosts = cleanLinks.filter(link => !visitedPosts.includes(link));
 
@@ -136,7 +135,7 @@ class FacebookService {
         page.click(submitBtn)
       ]);
 
-      // 2. التباعد الإدراكي (انتظار 10 ثوانٍ كأن البوت يفكر ويقرأ)
+      // 2. التباعد الإدراكي (انتظار 10 ثوانٍ)
       await new Promise(resolve => setTimeout(resolve, 10000));
 
       // 3. نشر تعليق الهشتاج الثاني
