@@ -1,29 +1,14 @@
-// src/index.js
-const express = require('express');
-const mongoose = require('mongoose');
-const { PORT, MONGO_URI } = require('./config');
-const webhookRoutes = require('./routes/webhook.routes'); // أو المسار المعرف لديك
-const JobService = require('./services/job.service');
+// src/config/index.js
+require('dotenv').config();
 
-const app = express();
-app.use(express.json());
-
-// مسارات التطبيق
-app.use('/', webhookRoutes);
-
-// الاتصال بقاعدة البيانات وبدء تشغيل الـ Worker
-mongoose.connect(MONGO_URI)
-  .then(() => {
-    console.log('✅ Connected to MongoDB Atlas');
-    
-    // بدء تشغيل الخادم
-    app.listen(PORT || 3000, () => {
-      console.log(`🚀 Server running on port ${PORT || 3000}`);
-      
-      // 🔔 تشغيل محرك المهام الدورية (كل 10 ثواني يفحص ويُنفذ)
-      JobService.initWorker(10000);
-    });
-  })
-  .catch((err) => {
-    console.error('❌ Database Connection Error:', err);
-  });
+module.exports = {
+  port: process.env.PORT || 10000,
+  // ✅ تصحيح: استخدام MONGODB_URI بدلاً من MONGO_URI
+  mongoUri: process.env.MONGODB_URI || process.env.MONGO_URI,
+  geminiApiKey: process.env.GEMINI_API_KEY,
+  // ✅ تصحيح: التأكد من قراءة VERIFY_TOKEN بشكل صحيح
+  verifyToken: process.env.VERIFY_TOKEN || process.env.verify_token,
+  pageAccessToken: process.env.PAGE_ACCESS_TOKEN || process.env.FB_PAGE_ACCESS_TOKEN,
+  fbGroupUrl: process.env.FB_GROUP_URL,
+  adminFbId: process.env.ADMIN_FB_ID
+};
