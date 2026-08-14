@@ -4,47 +4,82 @@ const Cookie = require('../models/Cookie');
 const MessengerService = require('../services/messenger.service');
 const { FB_VERIFY_TOKEN, ADMIN_FB_ID } = require('../config');
 
-// قاموس الربط بين الأوامر باللغتين العربية والإنجليزية المفتاح المعياري
+/**
+ * خريطة توحيد الأوامر (Command Map)
+ * تربط المرادفات بالعربية والإنجليزية بمفتاح موحد لتسهيل المعالجة.
+ */
 const COMMAND_MAP = {
-  // Run Command
   '/run': 'run',
   '/تشغيل': 'run',
   '/ابدا': 'run',
   '/ابدأ': 'run',
 
-  // Stop Command
   '/stop': 'stop',
   '/ايقاف': 'stop',
   '/إيقاف': 'stop',
   '/توقف': 'stop',
 
-  // Status Command
   '/status': 'status',
   '/حالة': 'status',
   '/الحالة': 'status',
 
-  // Add Cookie Command
   '/addcookie': 'addcookie',
   '/اضافة_كوكيز': 'addcookie',
   '/إضافة_كوكيز': 'addcookie',
   '/كوكيز': 'addcookie',
 
-  // List Cookies Command
   '/listcookies': 'listcookies',
   '/الحسابات': 'listcookies',
   '/عرض_الحسابات': 'listcookies',
 
-  // Logs Command
   '/logs': 'logs',
   '/سجل': 'logs',
   '/السجلات': 'logs',
 
-  // Help Command
   '/help': 'help',
   '/مساعدة': 'help',
   '/اوامر': 'help',
   '/أوامر': 'help'
 };
+
+/**
+ * دالة تحليل الكوكيز الذكية
+ * تدعم صيغة JSON والمحتوى النصي العادي (Header String) تلقائياً.
+ */
+function parseCookieInput(rawInput) {
+  const trimmed = rawInput.trim();
+  
+  // 1. المحاولة الأولى: التحليل كـ JSON
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed) || typeof parsed === 'object') {
+      return parsed;
+    }
+  } catch (e) {
+    // الانتقال للتحليل النصي في حال عدم تطابق صياغة JSON
+  }
+
+  // 2. المحاولة الثانية: التحليل كنص عادي (datr=xxx; sb=yyy)
+  const cookiePairs = trimmed.split(';').map(p => p.trim()).filter(Boolean);
+  const cookieArray = [];
+
+  for (const pair of cookiePairs) {
+    const equalIdx = pair.indexOf('=');
+    if (equalIdx !== -1) {
+      const name = pair.substring(0, equalIdx).trim();
+      const value = pair.substring(equalIdx + 1).trim();
+      if (name && value) {
+        cookieArray.push({ name, value });
+      }
+    }
+  }
+
+  if (cookieArray.length === 0) {
+    throw new Error('صيغة الكوكيز غير صالحة. تأكد من نسخ النص بشكل صحيح.');
+  }
+
+  return cookieArray;
+}
 
 class WebhookController {
   static verifyWebhook(req, res) {
@@ -88,13 +123,12 @@ class WebhookController {
     const parts = text.split(/\s+/);
     const rawCommand = parts[0].toLowerCase();
     
-    // تحويل الأمر العربي أو الإنجليزي إلى المفتاح المعياري
     const command = COMMAND_MAP[rawCommand] || rawCommand;
 
     try {
       switch (command) {
         case 'run': {
-          const targetPosts = parseInt(parts[1]) || 100;
+          const targetPosts = parseInt(parts[1], 10) || 100;
           const hours = parseFloat(parts[2]) || 4;
           const fixedComment = parts.slice(3).join(' ') || '𖢘[#فيلق_الهايبرا]𖢘';
 
@@ -112,18 +146,17 @@ class WebhookController {
           }, { upsert: true });
 
           await MessengerService.sendMessage(senderId, 
-            `🚀 تم إطلاق المهمة بنجاح! / Job Started!\n` +
-            `- المنشورات / Posts: ${targetPosts}\n` +
-            `- المدة / Duration: ${hours}h\n` +
-            `- التأخير / Delay: ${(delayMs / 1000).toFixed(1)}s\n` +
-            `- التعليق الجامد: ${fixedComment}`
+            `🚀 تم إطلاق المهمة!\n\n` +
+            `• المنشورات: ${targetPosts}\n` +
+            `• المدة: ${hours} ساعة\n` +
+            `• التعليق: ${fixedComment}`
           );
           break;
         }
 
         case 'stop': {
           await JobState.findOneAndUpdate({}, { isRunning: false });
-          await MessengerService.sendMessage(senderId, '🛑 تم إيقاف المهمة / Job Stopped.');
+          await MessengerService.sendMessage(senderId, '🛑 تم إيقاف المهمة بنجاح.');
           break;
         }
 
@@ -131,14 +164,12 @@ class WebhookController {
           const state = await JobState.findOne();
           const active = await Cookie.countDocuments({ status: 'ACTIVE' });
           const expired = await Cookie.countDocuments({ status: 'EXPIRED' });
-          const cooldown = await Cookie.countDocuments({ status: 'COOLDOWN' });
 
-          const statusMsg = `📊 تقرير الحالة / System Status:\n` +
-            `- التشغيل: ${state?.isRunning ? 'نشط 🟢' : 'متوقف 🔴'}\n` +
-            `- الإنجاز / Progress: ${state?.processedPosts || 0} / ${state?.targetPosts || 0}\n` +
-            `- الكوكيز النشطة / Active: ${active}\n` +
-            `- في الاستراحة / Cooldown: ${cooldown}\n` +
-            `- المنتهية / Expired: ${expired}`;
+          const statusMsg = `📊 حالة النظام:\n\n` +
+            `• الحالة: ${state?.isRunning ? 'نشط 🟢' : 'متوقف 🔴'}\n` +
+            `• الإنجاز: ${state?.processedPosts || 0} / ${state?.targetPosts || 0}\n` +
+            `• الحسابات النشطة: ${active}\n` +
+            `• الحسابات المنتهية: ${expired}`;
 
           await MessengerService.sendMessage(senderId, statusMsg);
           break;
@@ -146,39 +177,43 @@ class WebhookController {
 
         case 'addcookie': {
           const cookieName = parts[1];
-          const jsonString = parts.slice(2).join(' ');
+          const rawCookieData = parts.slice(2).join(' ');
 
-          if (!cookieName || !jsonString) {
+          if (!cookieName || !rawCookieData) {
             await MessengerService.sendMessage(senderId, 
-              '❌ صيغة خاطئة / Invalid Syntax.\n' +
-              'AR: /اضافة_كوكيز [الاسم] [JSON_String]\n' +
-              'EN: /addcookie [Name] [JSON_String]'
+              '❌ الصيغة الصحيحة:\n' +
+              '/اضافة_كوكيز [اسم_الحساب] [بيانات_الكوكيز]'
             );
             return;
           }
 
-          const parsedData = JSON.parse(jsonString);
-          await Cookie.findOneAndUpdate(
-            { name: cookieName },
-            { data: parsedData, status: 'ACTIVE', failureReason: null },
-            { upsert: true }
-          );
+          try {
+            const parsedData = parseCookieInput(rawCookieData);
 
-          await MessengerService.sendMessage(senderId, `✅ تم حفظ الكوكيز [${cookieName}] بنجاح / Cookie Saved.`);
+            await Cookie.findOneAndUpdate(
+              { name: cookieName },
+              { data: parsedData, status: 'ACTIVE', failureReason: null },
+              { upsert: true }
+            );
+
+            await MessengerService.sendMessage(senderId, `✅ تم حفظ الحساب [${cookieName}] بنجاح.`);
+          } catch (err) {
+            await MessengerService.sendMessage(senderId, `❌ خطأ في الكوكيز: ${err.message}`);
+          }
           break;
         }
 
         case 'listcookies': {
-          const cookies = await Cookie.find().select('name status failureReason successCount');
+          const cookies = await Cookie.find().select('name status successCount');
           if (cookies.length === 0) {
-            await MessengerService.sendMessage(senderId, '⚠️ لا يوجد كوكيز مسجل / No Cookies Found.');
+            await MessengerService.sendMessage(senderId, '⚠️ لا توجد حسابات مسجلة حالياً.');
             return;
           }
 
-          let listMsg = '📜 قائمة الحسابات / Cookie List:\n\n';
+          let listMsg = '📜 قائمة الحسابات:\n\n';
           cookies.forEach(c => {
-            listMsg += `• ${c.name}: [${c.status}] - Success: ${c.successCount}\n`;
-            if (c.failureReason) listMsg += `   └ Reason: ${c.failureReason}\n`;
+            const statusIcon = c.status === 'ACTIVE' ? '🟢' : '🔴';
+            listMsg += `${statusIcon} ${c.name} - نجاح: ${c.successCount}\n`;
           });
 
           await MessengerService.sendMessage(senderId, listMsg);
@@ -188,14 +223,14 @@ class WebhookController {
         case 'logs': {
           const state = await JobState.findOne();
           if (!state || !state.logs || state.logs.length === 0) {
-            await MessengerService.sendMessage(senderId, 'ℹ️ لا توجد سجلات / No Logs Available.');
+            await MessengerService.sendMessage(senderId, 'ℹ️ لا توجد سجلات حالياً.');
             return;
           }
 
           const recentLogs = state.logs.slice(-5).reverse();
-          let logMsg = '📋 آخر 5 سجلات / Last 5 Logs:\n\n';
+          let logMsg = '📋 آخر السجلات:\n\n';
           recentLogs.forEach(l => {
-            logMsg += `[${l.level}] ${new Date(l.timestamp).toLocaleTimeString()}: ${l.message}\n`;
+            logMsg += `• [${new Date(l.timestamp).toLocaleTimeString()}] ${l.message}\n`;
           });
 
           await MessengerService.sendMessage(senderId, logMsg);
@@ -204,32 +239,31 @@ class WebhookController {
 
         case 'help':
         default: {
-          const helpMsg = `🤖 الأوامر المتاحة / Available Commands:\n\n` +
-            `1️⃣ البدء / Start:\n` +
-            `• /run 2000 4 𖢘[#فيلق_الهايبرا]𖢘\n` +
-            `• /تشغيل 2000 4 𖢘[#فيلق_الهايبرا]𖢘\n\n` +
-            `2️⃣ الإيقاف / Stop:\n` +
-            `• /stop أو /ايقاف\n\n` +
-            `3️⃣ الحالة / Status:\n` +
-            `• /status أو /حالة\n\n` +
-            `4️⃣ إضافة حساب / Add Cookie:\n` +
-            `• /addcookie [Acc] [JSON]\n` +
-            `• /اضافة_كوكيز [Acc] [JSON]\n\n` +
-            `5️⃣ عرض الحسابات / List:\n` +
-            `• /listcookies أو /الحسابات\n\n` +
-            `6️⃣ السجلات / Logs:\n` +
-            `• /logs أو /سجل\n\n` +
-            `7️⃣ المساعدة / Help:\n` +
-            `• /help أو /مساعدة`;
+          const helpMsg = `🤖 قائمة الأوامر المبسطة:\n\n` +
+            `▶️ التشغيل:\n` +
+            `• /تشغيل [عدد_المنشورات] [الساعات] [التعليق]\n` +
+            `مثال: /تشغيل 100 2 سلام عليكم\n\n` +
+            `⏹️ الإيقاف:\n` +
+            `• /ايقاف\n\n` +
+            `📊 الحالة:\n` +
+            `• /حالة\n\n` +
+            `🔑 إضافة كوكيز:\n` +
+            `• /كوكيز [اسم_الحساب] [الكوكيز]\n\n` +
+            `👥 الحسابات:\n` +
+            `• /الحسابات\n\n` +
+            `📋 السجلات:\n` +
+            `• /سجل`;
+
           await MessengerService.sendMessage(senderId, helpMsg);
           break;
         }
       }
     } catch (error) {
       console.error('❌ Command Execution Error:', error);
-      await MessengerService.sendMessage(senderId, `❌ خطأ في تنفيذ الأمر / Command Error:\n${error.message}`);
+      await MessengerService.sendMessage(senderId, `❌ حدث خطأ أثناء تنفيذ الأمر: ${error.message}`);
     }
   }
 }
 
 module.exports = WebhookController;
+
