@@ -2,54 +2,45 @@
 const puppeteer = require('puppeteer');
 
 class FacebookService {
-  constructor() {
-    this.browser = null;
+  /**
+   * إطلاق متصفح خفيف جداً ومُحسّن لبيئة 512MB RAM
+   */
+  async _launchBrowser() {
+    return await puppeteer.launch({
+      headless: true,
+      protocolTimeout: 60000,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu',
+        '--single-process', // تشغيل المتصفح في عملية واحدة لتوفير الذاكرة
+        '--disable-extensions',
+        '--js-flags="--max-old-space-size=128"'
+      ]
+    });
   }
 
   /**
-   * تهيئة المتصفح المستقر لبيئة Render المحدودة
+   * إنشاء صفحة مع حظر كامل الوسائط لتوفير الذاكرة والسرعة
    */
-  async _getBrowser() {
-    if (!this.browser || !this.browser.isConnected()) {
-      this.browser = await puppeteer.launch({
-        headless: true,
-        protocolTimeout: 120000,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--no-first-run',
-          '--no-zygote',
-          '--disable-gpu',
-          '--single-process'
-        ]
-      });
-    }
-    return this.browser;
-  }
-
-  /**
-   * إنشاء تبويب جديد وتهيئته مع الكوكيز والحظر اللطيف للوسائط
-   */
-  async _createCleanPage(rawCookies) {
-    const browser = await this._getBrowser();
+  async _createCleanPage(browser, rawCookies) {
     const page = await browser.newPage();
-
+    
     await page.setRequestInterception(true);
     page.on('request', (req) => {
-      const resourceType = req.resourceType();
-      if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
+      const type = req.resourceType();
+      if (['image', 'media', 'font', 'stylesheet', 'other'].includes(type)) {
         req.abort();
       } else {
         req.continue();
       }
     });
 
-    page.setDefaultNavigationTimeout(35000);
-
-    const client = await page.target().createCDPSession();
-    await client.send('Network.clearBrowserCookies');
+    page.setDefaultNavigationTimeout(30000);
 
     if (rawCookies && Array.isArray(rawCookies)) {
       const formattedCookies = rawCookies.map(cookie => {
@@ -67,106 +58,100 @@ class FacebookService {
   }
 
   /**
-   * جلب المنشور التالي بشكل معزول وآمن تماماً
+   * جلب واستخراج روابط المنشورات الجديدة وإضافتها لقائمة الانتظار
    */
-  async fetchNextPost(rawCookies, groupUrl, visitedPosts = []) {
-    let mainPage = null;
-
+  async discoverPendingPosts(rawCookies, groupUrl, visitedPosts = []) {
+    let browser = null;
     try {
-      mainPage = await this._createCleanPage(rawCookies);
-      await mainPage.goto(groupUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
+      browser = await this._launchBrowser();
+      const page = await this._createCleanPage(browser, rawCookies);
+      
+      await page.goto(groupUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-      // 1. استخراج كل الروابط المتاحة أولاً دفعة واحدة
-      const candidateLinks = await mainPage.$$eval('a', anchors => {
+      const extractedLinks = await page.$$eval('a', anchors => {
         return anchors
           .map(a => a.href)
           .filter(href => href && (href.includes('/story.php') || href.includes('/groups/') || href.includes('/posts/')));
       });
 
-      // إغلاق التبويب الرئيسي فوراً لتوفير الذاكرة
-      await mainPage.close();
-      mainPage = null;
+      // تنقية الروابط واستبعاد المزارة سابقاً
+      const cleanLinks = [...new Set(extractedLinks.map(l => l.split('?')[0]))];
+      const newPosts = cleanLinks.filter(link => !visitedPosts.includes(link));
 
-      // 2. البحث عن أول رابط لم يتم زيارته
-      for (const linkUrl of candidateLinks) {
-        const cleanUrl = linkUrl.split('?')[0];
-
-        if (!visitedPosts.includes(cleanUrl) && !visitedPosts.includes(linkUrl)) {
-          // فتح تبويب معزول خصيصاً لمطالعة المنشور المستهدف
-          let postPage = null;
-          try {
-            postPage = await this._createCleanPage(rawCookies);
-            await postPage.goto(linkUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-
-            // قراءة النص بحذر
-            const postText = await postPage.evaluate(() => {
-              const elements = Array.from(document.querySelectorAll('p, article, div, span'));
-              const longestTextNode = elements.reduce((max, el) => {
-                const text = el.innerText ? el.innerText.trim() : '';
-                return text.length > max.length ? text : max;
-              }, '');
-              return longestTextNode;
-            });
-
-            await postPage.close();
-
-            return {
-              postUrl: linkUrl,
-              cleanUrl: cleanUrl,
-              postText: postText || 'منشور تفاعلي مصور'
-            };
-
-          } catch (singlePostError) {
-            console.warn(`⚠️ تعذر جلب تفاصيل المنشور (${linkUrl}): ${singlePostError.message}`);
-            if (postPage) await postPage.close().catch(() => {});
-            // استمرار الحلقة لتقييم الرابط التالي
-          }
-        }
-      }
-
-      throw new Error('لم يتم العثور على منشورات جديدة غير معلق عليها حالياً');
-
+      return newPosts;
     } catch (error) {
-      if (mainPage) await mainPage.close().catch(() => {});
-      throw new Error(`فشل جلب المنشور التالي: ${error.message}`);
+      throw new Error(`فشل جلب المنشورات: ${error.message}`);
+    } finally {
+      if (browser) await browser.close().catch(() => {});
     }
   }
 
   /**
-   * تنفيذ كتابة ونشر التعليق على رابط منشور محدد
+   * قراءة نص منشور واحد وقفل التبويب فوراً
    */
-  async submitComment(rawCookies, postUrl, commentText) {
-    let page = null;
+  async fetchPostText(rawCookies, postUrl) {
+    let browser = null;
     try {
-      page = await this._createCleanPage(rawCookies);
-      await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
+      browser = await this._launchBrowser();
+      const page = await this._createCleanPage(browser, rawCookies);
+      
+      await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-      const textareaSelector = 'textarea[name="comment_text"], textarea';
-      await page.waitForSelector(textareaSelector, { timeout: 15000 });
-      await page.type(textareaSelector, commentText, { delay: 40 });
+      const postText = await page.evaluate(() => {
+        const elements = Array.from(document.querySelectorAll('p, article, div, span'));
+        return elements.reduce((max, el) => {
+          const text = el.innerText ? el.innerText.trim() : '';
+          return text.length > max.length ? text : max;
+        }, '');
+      });
 
-      const submitSelector = 'input[type="submit"][name="post"], input[type="submit"]';
+      return postText || 'منشور تفاعلي';
+    } catch (error) {
+      throw new Error(`فشل قراءة المنشور: ${error.message}`);
+    } finally {
+      if (browser) await browser.close().catch(() => {});
+    }
+  }
+
+  /**
+   * تنفيذ التعليق المزدوج مع التباعد الإدراكي (Cognitive Spacing)
+   */
+  async submitDualComments(rawCookies, postUrl, aiComment, hashtag) {
+    let browser = null;
+    try {
+      browser = await this._launchBrowser();
+      const page = await this._createCleanPage(browser, rawCookies);
+      
+      await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+      const selector = 'textarea[name="comment_text"], textarea';
+      await page.waitForSelector(selector, { timeout: 15000 });
+
+      // 1. نشر تعليق الذكاء الاصطناعي
+      await page.type(selector, aiComment, { delay: 30 });
+      const submitBtn = 'input[type="submit"][name="post"], input[type="submit"]';
       
       await Promise.all([
-        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}),
-        page.click(submitSelector)
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {}),
+        page.click(submitBtn)
+      ]);
+
+      // 2. التباعد الإدراكي (انتظار 10 ثوانٍ كأن البوت يفكر ويقرأ)
+      await new Promise(resolve => setTimeout(resolve, 10000));
+
+      // 3. نشر تعليق الهشتاج الثاني
+      await page.waitForSelector(selector, { timeout: 15000 });
+      await page.type(selector, hashtag, { delay: 30 });
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {}),
+        page.click(submitBtn)
       ]);
 
       return true;
     } catch (error) {
-      throw new Error(`فشل كتابة التعليق: ${error.message}`);
+      throw new Error(`فشل كتابة التعليق المزدوج: ${error.message}`);
     } finally {
-      if (page) await page.close().catch(() => {});
-    }
-  }
-
-  /**
-   * إغلاق المتصفح عند إيقاف الخدمة
-   */
-  async close() {
-    if (this.browser) {
-      await this.browser.close().catch(() => {});
-      this.browser = null;
+      if (browser) await browser.close().catch(() => {});
     }
   }
 }
