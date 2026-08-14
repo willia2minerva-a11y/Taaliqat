@@ -6,22 +6,16 @@ const geminiService = require('./services/gemini.service');
 const MessengerService = require('./services/messenger.service');
 const { ADMIN_FB_ID } = require('./config');
 
-/**
- * دالة حلقة العمل الخلفية (Worker Loop Engine)
- */
 async function startWorkerLoop() {
   console.log('⚙️ Background Worker Loop Started.');
 
-  // تحديد فترة التكرار الافتراضية بشكل ثابت ومباشر (15 ثانية) لتجنب أخطاء النطاق Scope Errors
   const LOOP_INTERVAL_MS = 15000;
 
   setInterval(async () => {
     try {
-      // 1. التحقق من وجود مهمة قيد التشغيل
       const job = await JobState.findOne({ isRunning: true });
       if (!job) return;
 
-      // 2. التحقق من استيفاء عدد المنشورات المستهدفة
       if (job.processedPosts >= job.targetPosts) {
         job.isRunning = false;
         await job.save();
@@ -31,7 +25,6 @@ async function startWorkerLoop() {
         return;
       }
 
-      // 3. جلب أول حساب نشط من قاعدة البيانات
       const activeCookie = await Cookie.findOne({ status: 'ACTIVE' });
       if (!activeCookie) {
         job.isRunning = false;
@@ -43,24 +36,21 @@ async function startWorkerLoop() {
       }
 
       try {
-        // 4. جلب منشور جديد غير معلق عليه سابقاً
+        // 1. جلب منشور جديد معزول
         const postData = await facebookService.fetchNextPost(
           activeCookie.data,
           job.groupUrl || 'https://mbasic.facebook.com',
           job.visitedPosts || []
         );
 
-        // 5. توليد تعليق الـ AI (أو الخطة B عند الفشل)
+        // 2. توليد تعليق الذكاء الاصطناعي (أو الخطة B)
         const aiResult = await geminiService.generateComment(postData.postText);
 
-        // 6. كتابة التعليق الأول (الذكاء الاصطناعي / الخطة B)
-        await facebookService.submitComment(aiResult.comment);
+        // 3. التعليق الأول (AI / الخطة B)
+        await facebookService.submitComment(activeCookie.data, postData.postUrl, aiResult.comment);
 
-        // 7. كتابة التعليق الثاني (التعليق الثابت / الهشتاج)
-        await facebookService.submitComment(job.fixedComment);
-
-        // 8. إغلاق الجلسة وتحديث السجلات
-        await facebookService.close();
+        // 4. التعليق الثاني (الثابت / الهشتاج)
+        await facebookService.submitComment(activeCookie.data, postData.postUrl, job.fixedComment);
 
         job.processedPosts += 1;
         if (!job.visitedPosts) job.visitedPosts = [];
@@ -81,7 +71,8 @@ async function startWorkerLoop() {
         activeCookie.successCount += 1;
         await activeCookie.save();
 
-        // إرسال تنبيه في حال استخدام الخطة B
+        console.log(`✅ تم التعليق بنجاح على [${postData.cleanUrl}] بواسطة [${activeCookie.name}]`);
+
         if (!aiResult.isAi && ADMIN_FB_ID) {
           const warningMsg = `⚠️ **تنبيه الخطة B:**\n\n` +
             `• المنشور: ${postData.cleanUrl}\n` +
@@ -91,8 +82,7 @@ async function startWorkerLoop() {
         }
 
       } catch (err) {
-        console.error(`⚠️ خطأ في تنفيذ المهمة للحساب [${activeCookie.name}]: ${err.message}`);
-        await facebookService.close();
+        console.error(`⚠️ خطأ في حساب [${activeCookie.name}]: ${err.message}`);
 
         const isCriticalError = err.message.includes('login') || 
                                 err.message.includes('checkpoint') || 
@@ -106,8 +96,8 @@ async function startWorkerLoop() {
           if (ADMIN_FB_ID) {
             const alertMsg = `⚠️ **تنبيه عطل حساب!**\n\n` +
               `• الحساب: [${activeCookie.name}]\n` +
-              `• السبب الدقيق: ${err.message}\n` +
-              `💡 سيتم الانتقال للحساب النشط التالي تلقائياً.`;
+              `• السبب: ${err.message}\n` +
+              `💡 سيتم التبديل تلقائياً للحساب النشط التالي.`;
             
             await MessengerService.sendMessage(ADMIN_FB_ID, alertMsg);
           }
