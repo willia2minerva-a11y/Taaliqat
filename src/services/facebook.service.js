@@ -1,10 +1,14 @@
 // src/services/facebook.service.js
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
 
 class FacebookService {
   async _launchBrowser() {
-    // استخدام Chrome النظام إن وجد، أو تنزيله تلقائياً
-    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
+    // محاولة استخدام Chrome من النظام أولاً
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || 
+                           '/usr/bin/google-chrome-stable' ||
+                           '/usr/bin/chromium-browser';
+    
+    console.log(`🔍 Launching browser with: ${executablePath}`);
     
     return await puppeteer.launch({
       headless: true,
@@ -30,7 +34,7 @@ class FacebookService {
   async _createCleanPage(browser, rawCookies) {
     const page = await browser.newPage();
     
-    // تعطيل تحميل الصور والوسائط لتوفير الذاكرة
+    // تعطيل تحميل الصور والوسائط
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const type = req.resourceType();
@@ -65,6 +69,7 @@ class FacebookService {
       browser = await this._launchBrowser();
       const page = await this._createCleanPage(browser, rawCookies);
       
+      console.log(`🌐 Navigating to: ${groupUrl}`);
       await page.goto(groupUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
       const extractedLinks = await page.$$eval('a', anchors => {
@@ -76,6 +81,7 @@ class FacebookService {
       const cleanLinks = [...new Set(extractedLinks.map(l => l.split('?')[0]))];
       const newPosts = cleanLinks.filter(link => !visitedPosts.includes(link));
 
+      console.log(`📝 Found ${newPosts.length} new posts`);
       return newPosts;
     } catch (error) {
       throw new Error(`فشل جلب المنشورات: ${error.message}`);
