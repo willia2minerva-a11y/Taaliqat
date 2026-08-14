@@ -5,6 +5,7 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node --expose-gc --max-old-space-size=250 src/server.js",
+    "build": "puppeteer browsers install chrome",
     "dev": "nodemon src/server.js"
   },
   "dependencies": {
