@@ -1,7 +1,7 @@
 // src/worker.js
 const JobState = require('./models/JobState');
 const Cookie = require('./models/Cookie');
-const FacebookService = require('./services/facebook.service');
+const facebookService = require('./services/facebook.service');
 
 async function startWorkerLoop() {
   console.log('⚙️ Background Worker Loop Started.');
@@ -25,37 +25,31 @@ async function startWorkerLoop() {
       return;
     }
 
-    // إنشاء نسخة جديدة من الخدمة لكل مهمة (Instance Pattern)
-    const fbService = new FacebookService();
-
     try {
-      // 1. التهيئة
-      await fbService.init(activeCookie.data);
+      const targetUrl = 'https://mbasic.facebook.com'; // يفضل استخدام النسخة الخفيفة لسرعة فائقة
+      
+      await facebookService.postComment(activeCookie.data, targetUrl, job.fixedComment);
 
-      // 2. التنفيذ (يمكنك إسناد رابط منشور حقيقي هنا)
-      const targetUrl = 'https://www.facebook.com'; 
-      await fbService.postComment(targetUrl, job.fixedComment);
-
-      // 3. تحديث البيانات
+      // تحديث العداد
       job.processedPosts += 1;
       await job.save();
 
       activeCookie.successCount += 1;
       await activeCookie.save();
 
-      console.log(`📈 تم النشر بنجاح! الإنجاز الحالي: ${job.processedPosts}/${job.targetPosts}`);
+      console.log(`📈 تم النشر بنجاح! الإنجاز: ${job.processedPosts}/${job.targetPosts}`);
 
     } catch (err) {
       console.error(`⚠️ خطأ في الحساب [${activeCookie.name}]: ${err.message}`);
       
-      activeCookie.status = 'EXPIRED';
-      activeCookie.failureReason = err.message;
-      await activeCookie.save();
-    } finally {
-      // إغلاق المتصفح دائماً حتى عند حدوث استثناء
-      await fbService.close();
+      // عدم تغيير الحالة إلى EXPIRED إلا إذا كان الخطأ متعلقاً بالسيشن/التسجيل صراحة
+      if (err.message.includes('login') || err.message.includes('checkpoint')) {
+        activeCookie.status = 'EXPIRED';
+        activeCookie.failureReason = err.message;
+        await activeCookie.save();
+      }
     }
-  }, 15000); // تنفذ كل 15 ثانية
+  }, 15000);
 }
 
 module.exports = { startWorkerLoop };
