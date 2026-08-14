@@ -1,18 +1,11 @@
 // src/services/facebook.service.js
-const puppeteer = require('puppeteer-core');
+const puppeteer = require('puppeteer');
 
 class FacebookService {
   async _launchBrowser() {
-    // محاولة استخدام Chrome من النظام أولاً
-    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || 
-                           '/usr/bin/google-chrome-stable' ||
-                           '/usr/bin/chromium-browser';
-    
-    console.log(`🔍 Launching browser with: ${executablePath}`);
-    
+    // ✅ استخدام puppeteer بدون تحديد مسار - سينزل Chrome تلقائياً
     return await puppeteer.launch({
       headless: true,
-      executablePath: executablePath,
       protocolTimeout: 60000,
       args: [
         '--no-sandbox',
@@ -34,7 +27,7 @@ class FacebookService {
   async _createCleanPage(browser, rawCookies) {
     const page = await browser.newPage();
     
-    // تعطيل تحميل الصور والوسائط
+    // تعطيل تحميل الصور والوسائط لتوفير الذاكرة
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const type = req.resourceType();
@@ -84,6 +77,7 @@ class FacebookService {
       console.log(`📝 Found ${newPosts.length} new posts`);
       return newPosts;
     } catch (error) {
+      console.error(`❌ discoverPendingPosts error: ${error.message}`);
       throw new Error(`فشل جلب المنشورات: ${error.message}`);
     } finally {
       if (browser) await browser.close().catch(() => {});
@@ -108,6 +102,7 @@ class FacebookService {
 
       return postText || 'منشور تفاعلي';
     } catch (error) {
+      console.error(`❌ fetchPostText error: ${error.message}`);
       throw new Error(`فشل قراءة المنشور: ${error.message}`);
     } finally {
       if (browser) await browser.close().catch(() => {});
@@ -147,6 +142,7 @@ class FacebookService {
 
       return true;
     } catch (error) {
+      console.error(`❌ submitDualComments error: ${error.message}`);
       throw new Error(`فشل كتابة التعليق المزدوج: ${error.message}`);
     } finally {
       if (browser) await browser.close().catch(() => {});
