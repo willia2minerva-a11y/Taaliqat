@@ -2,30 +2,15 @@
 const Cookie = require('../models/Cookie');
 
 class CookieManagerService {
-  // ✅ تفعيل كوكيز
-  async enableCookie(cookieData) {
+  // ✅ الحصول على جميع الكوكيز مع أسماء الحسابات
+  async getAllCookies() {
     try {
-      console.log('🍪 Enabling cookie...');
-      
-      let cookies = cookieData;
-      if (typeof cookieData === 'string') {
-        cookies = cookieData.split('; ').map(cookie => {
-          const [name, value] = cookie.split('=');
-          return { name: name.trim(), value: value || '', domain: '.facebook.com', path: '/' };
-        });
-      }
-
-      const cookieDoc = await Cookie.findOneAndUpdate(
-        { accountName: 'main_account' },
-        { cookies, status: 'ACTIVE', lastUsedAt: new Date() },
-        { upsert: true, new: true }
-      );
-
-      console.log(`✅ Cookie enabled: ${cookieDoc.accountName}`);
-      return cookieDoc;
+      const cookies = await Cookie.find({});
+      console.log(`📊 Found ${cookies.length} cookie entries`);
+      return cookies;
     } catch (error) {
-      console.error(`❌ Error enabling cookie: ${error.message}`);
-      throw error;
+      console.error(`❌ Error fetching cookies: ${error.message}`);
+      return [];
     }
   }
 
@@ -40,20 +25,8 @@ class CookieManagerService {
       console.log(`✅ Active cookies: ${cookieDoc.accountName}`);
       return cookieDoc.cookies;
     } catch (error) {
-      console.error(`❌ Error fetching cookies: ${error.message}`);
+      console.error(`❌ Error fetching active cookies: ${error.message}`);
       return null;
-    }
-  }
-
-  // ✅ الحصول على جميع الكوكيز (للمراقبة)
-  async getAllCookies() {
-    try {
-      const cookies = await Cookie.find({});
-      console.log(`📊 Found ${cookies.length} cookie entries`);
-      return cookies;
-    } catch (error) {
-      console.error(`❌ Error fetching cookies: ${error.message}`);
-      return [];
     }
   }
 
@@ -62,6 +35,19 @@ class CookieManagerService {
     try {
       console.log(`🍪 Adding new cookies for: ${accountName}`);
       
+      // التحقق من وجود الحساب مسبقاً
+      const existing = await Cookie.findOne({ accountName });
+      if (existing) {
+        // تحديث الكوكيز الموجودة
+        existing.cookies = cookies;
+        existing.status = 'ACTIVE';
+        existing.lastUsedAt = new Date();
+        await existing.save();
+        console.log(`✅ Cookies updated for: ${accountName}`);
+        return existing;
+      }
+
+      // إنشاء حساب جديد
       const cookieDoc = new Cookie({
         accountName: accountName,
         cookies: cookies,
@@ -122,6 +108,28 @@ class CookieManagerService {
       console.log(`🔄 Cookie ${cookieId} usage updated`);
     } catch (error) {
       console.error(`❌ Error updating cookie usage: ${error.message}`);
+    }
+  }
+
+  // ✅ حذف حساب
+  async deleteAccount(accountName) {
+    try {
+      const result = await Cookie.findOneAndDelete({ accountName });
+      return result;
+    } catch (error) {
+      console.error(`❌ Error deleting account: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ✅ حذف جميع الحسابات غير النشطة
+  async deleteInactiveAccounts() {
+    try {
+      const result = await Cookie.deleteMany({ status: 'BLOCKED' });
+      return result;
+    } catch (error) {
+      console.error(`❌ Error deleting inactive accounts: ${error.message}`);
+      throw error;
     }
   }
 }
