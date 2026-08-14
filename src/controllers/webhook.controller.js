@@ -1,5 +1,7 @@
 // src/controllers/webhook.controller.js
 const config = require('../config');
+const jobService = require('../services/job.service');
+const messengerService = require('../services/messenger.service');
 
 class WebhookController {
   verifyWebhook(req, res) {
@@ -14,13 +16,11 @@ class WebhookController {
     console.log(`🔐 Token received: ${token}`);
     console.log(`🔑 Expected token: ${config.verifyToken}`);
 
-    // ✅ التحقق من وجود المعاملات
     if (!mode || !token) {
       console.log('❌ Missing mode or token');
       return res.status(400).send('Missing hub.mode or hub.verify_token');
     }
 
-    // ✅ التحقق من صحة الرمز (مع تجاهل حالة الأحرف)
     if (mode === 'subscribe' && token === config.verifyToken) {
       console.log('✅ WEBHOOK_VERIFIED successfully!');
       return res.status(200).send(challenge);
@@ -56,8 +56,7 @@ class WebhookController {
   }
 
   async _processCommand(senderId, text) {
-    const jobService = require('../services/job.service');
-    const messengerService = require('../services/messenger.service');
+    console.log(`⚙️ Processing command: "${text}" from ${senderId}`);
 
     try {
       if (text.startsWith('/تشغيل')) {
@@ -91,7 +90,11 @@ class WebhookController {
       }
     } catch (error) {
       console.error(`❌ Command error: ${error.message}`);
-      await messengerService.sendTextMessage(senderId, `❌ خطأ: ${error.message}`);
+      try {
+        await messengerService.sendTextMessage(senderId, `❌ خطأ: ${error.message}`);
+      } catch (err) {
+        console.error(`❌ Failed to send error message: ${err.message}`);
+      }
     }
   }
 }
