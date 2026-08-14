@@ -1,59 +1,33 @@
-// src/index.js
-// ✅ هذا الملف يصدر جميع الخدمات والنماذج للاستخدام السهل
+// src/config/index.js
+require('dotenv').config();
 
-// ===== Config =====
-const config = require('./config');
+// ✅ طباعة المتغيرات للتصحيح
+console.log('🔍 Environment Variables Check:');
+console.log('VERIFY_TOKEN:', process.env.VERIFY_TOKEN ? '✅ Set' : '❌ Missing');
+console.log('MONGO_URI:', process.env.MONGO_URI ? '✅ Set' : '❌ Missing');
+console.log('GEMINI_API_KEY:', process.env.GEMINI_API_KEY ? '✅ Set' : '❌ Missing');
+console.log('PAGE_ACCESS_TOKEN:', process.env.PAGE_ACCESS_TOKEN ? '✅ Set' : '❌ Missing');
 
-// ===== Services =====
-const dbService = require('./services/db.service');
-const facebookService = require('./services/facebook.service');
-const geminiService = require('./services/gemini.service');
-const jobService = require('./services/job.service');
-const messengerService = require('./services/messenger.service');
-const cookieManagerService = require('./services/cookieManager.service');
-
-// ===== Models =====
-const JobState = require('./models/JobState');
-const Cookie = require('./models/Cookie');
-const Post = require('./models/Post');
-
-// ===== Controllers =====
-const webhookController = require('./controllers/webhook.controller');
-
-// ===== Routes =====
-const webhookRoutes = require('./routes/webhook.routes');
-
-// ===== Middlewares =====
-const errorHandler = require('./middlewares/errorHandler');
-
-// ===== Worker =====
-const atomicWorker = require('./worker');
-
-// ===== Server =====
-const server = require('./server');
-
-// ✅ تصدير كل شيء للاستخدام في ملفات أخرى
 module.exports = {
-  config,
-  dbService,
-  facebookService,
-  geminiService,
-  jobService,
-  messengerService,
-  cookieManagerService,
-  JobState,
-  Cookie,
-  Post,
-  webhookController,
-  webhookRoutes,
-  errorHandler,
-  atomicWorker,
-  server
+  // Server
+  port: process.env.PORT || 10000,
+  nodeEnv: process.env.NODE_ENV || 'development',
+  
+  // Database
+  mongoUri: process.env.MONGO_URI,
+  
+  // AI
+  geminiApiKey: process.env.GEMINI_API_KEY,
+  
+  // Facebook Webhook
+  verifyToken: process.env.VERIFY_TOKEN,
+  
+  // Facebook Page
+  pageAccessToken: process.env.PAGE_ACCESS_TOKEN || process.env.FB_PAGE_ACCESS_TOKEN,
+  
+  // Facebook Group
+  fbGroupUrl: process.env.FB_GROUP_URL,
+  
+  // Admin
+  adminFbId: process.env.ADMIN_FB_ID
 };
-
-// ✅ طباعة رسالة تأكيد
-console.log('📦 Taaliqat Bot modules loaded successfully!');
-console.log(`🔑 VERIFY_TOKEN: ${config.verifyToken ? '✅ Configured' : '❌ NOT SET!'}`);
-console.log(`🗄️  Database: ${config.mongoUri ? '✅ Configured' : '❌ NOT SET!'}`);
-console.log(`🤖 Gemini AI: ${config.geminiApiKey ? '✅ Configured' : '❌ NOT SET!'}`);
-console.log(`📱 Page Access Token: ${config.pageAccessToken ? '✅ Configured' : '❌ NOT SET!'}`);
