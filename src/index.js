@@ -34,35 +34,20 @@ const server = require('./server');
 
 // ✅ تصدير كل شيء للاستخدام في ملفات أخرى
 module.exports = {
-  // Config
   config,
-  
-  // Services
   dbService,
   facebookService,
   geminiService,
   jobService,
   messengerService,
   cookieManagerService,
-  
-  // Models
   JobState,
   Cookie,
   Post,
-  
-  // Controllers
   webhookController,
-  
-  // Routes
   webhookRoutes,
-  
-  // Middlewares
   errorHandler,
-  
-  // Worker
   atomicWorker,
-  
-  // Server
   server
 };
 
