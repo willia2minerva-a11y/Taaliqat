@@ -3,7 +3,9 @@ const config = require('../config');
 const jobService = require('../services/job.service');
 const messengerService = require('../services/messenger.service');
 const cookieManagerService = require('../services/cookieManager.service');
-const facebookService = require('../services/facebook.service');
+const Cookie = require('../models/Cookie');
+const Post = require('../models/Post');
+const JobState = require('../models/JobState');
 
 class WebhookController {
   verifyWebhook(req, res) {
@@ -61,7 +63,7 @@ class WebhookController {
 
     try {
       // ============================================
-      // 📌 أمر تشغيل البوت (مع المدة الزمنية)
+      // 📌 أمر تشغيل البوت
       // ============================================
       if (text.startsWith('/تشغيل')) {
         const parts = text.split(' ');
@@ -101,7 +103,6 @@ class WebhookController {
           ? `${job.completedCount} / ${job.totalTarget}` 
           : '0 / 0';
 
-        const activeCookies = await cookieManagerService.getActiveCookies();
         const allCookies = await cookieManagerService.getAllCookies();
         const activeCount = allCookies.filter(c => c.status === 'ACTIVE').length;
         const blockedCount = allCookies.filter(c => c.status === 'BLOCKED').length;
@@ -120,7 +121,6 @@ class WebhookController {
       // 💬 عرض روابط آخر المنشورات
       // ============================================
       else if (text === '/التعليقات' || text === '/comments') {
-        const Post = require('../models/Post');
         const posts = await Post.find().sort({ createdAt: -1 }).limit(10);
         
         if (posts.length === 0) {
@@ -235,10 +235,9 @@ class WebhookController {
       // 📋 عرض السجلات الأخيرة
       // ============================================
       else if (text === '/سجل' || text === '/logs') {
-        const JobState = require('../models/JobState');
         const job = await JobState.findOne({ jobId: 'main_job' });
         
-        if (!job) {
+        if (!job || job.visitedPosts.length === 0) {
           await messengerService.sendTextMessage(
             senderId,
             '📭 لا توجد سجلات متاحة.'
@@ -257,7 +256,7 @@ class WebhookController {
       }
 
       // ============================================
-      // ❓ أوامر غير معروفة - عرض المساعدة
+      // ❓ أوامر غير معروفة
       // ============================================
       else {
         await messengerService.sendTextMessage(
@@ -277,6 +276,7 @@ class WebhookController {
 
     } catch (error) {
       console.error(`❌ Command error: ${error.message}`);
+      console.error(`📚 Stack: ${error.stack}`);
       await messengerService.sendTextMessage(
         senderId,
         `❌ حدث خطأ: ${error.message}`
