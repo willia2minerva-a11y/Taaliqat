@@ -2,75 +2,84 @@
 const puppeteer = require('puppeteer');
 
 class FacebookService {
+  constructor() {
+    this.browser = null;
+    this.page = null;
+  }
+
   /**
-   * إنشاء جلسة متصفح آمنة وتغذيتها بالكوكيز بأسلوب آمن ومعالج بروتوكولياً
+   * تهيئة المتصفح والجلسة (يتوافق مع استدعاء fbService.init)
    */
-  static async createSession(rawCookies) {
-    // 1. إطلاق المتصفح بإعدادات آمنة لبيئة Render/Linux
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu'
-      ]
-    });
-
-    const page = await browser.newPage();
-
+  async init(rawCookies) {
     try {
-      // 2. تفريغ كوكيز الجلسة عبر CDP بدون الوقوع في خطأ Network.deleteCookies
-      const client = await page.target().createCDPSession();
-      await client.send('Network.clearBrowserCookies');
-
-      // 3. توحيد وتصحيح بنية الكوكيز لضمان مطابقة متطلبات Puppeteer
-      const formattedCookies = rawCookies.map(cookie => {
-        // إستبعاد الخصائص غير المطبقة أو المسببة للأخطاء
-        const { sameSite, ...validProperties } = cookie;
-
-        return {
-          ...validProperties,
-          // إسناد Fallback للنطاق والرابط لضمان قبول البروتوكول
-          domain: cookie.domain || '.facebook.com',
-          url: cookie.url || 'https://www.facebook.com'
-        };
+      this.browser = await puppeteer.launch({
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-gpu'
+        ]
       });
 
-      // 4. إسناد الكوكيز المعالجة للصفحة
-      await page.setCookie(...formattedCookies);
+      this.page = await this.browser.newPage();
 
-      return { browser, page };
+      // مسح الكوكيز القديمة عبر جلسة CDP لتجنب خطأ Protocol
+      const client = await this.page.target().createCDPSession();
+      await client.send('Network.clearBrowserCookies');
+
+      // معالجة وتنسيق الكوكيز
+      if (rawCookies && Array.isArray(rawCookies)) {
+        const formattedCookies = rawCookies.map(cookie => {
+          const { sameSite, ...rest } = cookie;
+          return {
+            ...rest,
+            domain: cookie.domain || '.facebook.com',
+            url: cookie.url || 'https://www.facebook.com'
+          };
+        });
+        await this.page.setCookie(...formattedCookies);
+      }
+
+      return true;
     } catch (error) {
-      // ضمان إغلاق المتصفح في حال وجود أي استثناء لمنع تسرب الذاكرة (Memory Leak)
-      await browser.close();
-      throw new Error(`فشل إعداد جلسة المتصفح: ${error.message}`);
+      if (this.browser) await this.browser.close();
+      throw new Error(`فشل تهيئة جلسة فيسبوك: ${error.message}`);
     }
   }
 
   /**
-   * تنفيذ عملية التعليق على منشور محدد
+   * إغلاق الجلسة والمتصفح بأمان (يتوافق مع fbService.close)
    */
-  static async postComment(cookiesData, postUrl, commentText) {
-    let session = null;
+  async close() {
+    if (this.browser) {
+      await this.browser.close();
+      this.browser = null;
+      this.page = null;
+    }
+  }
+
+  /**
+   * تنفيذ كتابة التعليق على المنشور
+   */
+  async postComment(postUrl, commentText) {
+    if (!this.page) {
+      throw new Error('الجلسة غير مهيأة. يجب استدعاء init أولاً.');
+    }
+
     try {
-      session = await FacebookService.createSession(cookiesData);
-      const { page, browser } = session;
-
-      // التوجه للمنشور وتنفيذ الإجراء
-      await page.goto(postUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      await this.page.goto(postUrl, { waitUntil: 'networkidle2', timeout: 60000 });
       
-      // === أضف منطق الضغط على التعليق والنشر الخاص بك هنا ===
+      // === أضف محددات السلكتور الخاصة بالضغط على التعليق هنا ===
+      // await this.page.type('textarea', commentText);
+      // await this.page.click('button[type="submit"]');
 
-      await browser.close();
       return true;
     } catch (error) {
-      if (session?.browser) await session.browser.close();
-      console.error('❌ Error in postComment:', error.message);
-      throw error;
+      throw new Error(`فشل نشر التعليق: ${error.message}`);
     }
   }
 }
