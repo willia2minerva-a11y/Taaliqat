@@ -182,7 +182,9 @@ class WebhookController {
         let message = '📜 **قائمة الحسابات المسجلة:**\n\n';
         allCookies.forEach(cookie => {
           const status = cookie.status === 'ACTIVE' ? '🟢' : '🔴';
-          message += `${status} ${cookie.accountName}\n`;
+          // ✅ استخدام cookie.accountName بدلاً من cookie.name
+          const name = cookie.accountName || 'غير معروف';
+          message += `${status} ${name} - نجاح: ${cookie.visitedCount || 0}\n`;
         });
 
         message += '\n💡 لحذف حساب محدد: /حذف [اسم_الحساب]\n';
@@ -195,6 +197,16 @@ class WebhookController {
       // 🗑️ حذف حساب محدد
       // ============================================
       else if (text.startsWith('/حذف')) {
+        // ✅ التحقق من أن الأمر ليس /حذف_غير_نشط
+        if (text === '/حذف_غير_نشط' || text === '/clean') {
+          const result = await cookieManagerService.deleteInactiveAccounts();
+          await messengerService.sendTextMessage(
+            senderId,
+            `🧹 تم حذف **${result.deletedCount}** حساب غير نشط.`
+          );
+          return;
+        }
+
         const parts = text.split(' ');
         const accountName = parts[1];
 
@@ -206,7 +218,7 @@ class WebhookController {
           return;
         }
 
-        const result = await Cookie.findOneAndDelete({ accountName });
+        const result = await cookieManagerService.deleteAccount(accountName);
         if (result) {
           await messengerService.sendTextMessage(
             senderId,
@@ -221,10 +233,10 @@ class WebhookController {
       }
 
       // ============================================
-      // 🧹 حذف الحسابات غير النشطة
+      // 🧹 حذف الحسابات غير النشطة (اختصار)
       // ============================================
       else if (text === '/حذف_غير_نشط' || text === '/clean') {
-        const result = await Cookie.deleteMany({ status: 'BLOCKED' });
+        const result = await cookieManagerService.deleteInactiveAccounts();
         await messengerService.sendTextMessage(
           senderId,
           `🧹 تم حذف **${result.deletedCount}** حساب غير نشط.`
