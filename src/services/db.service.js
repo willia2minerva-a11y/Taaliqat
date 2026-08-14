@@ -1,18 +1,41 @@
+// src/services/db.service.js
 const mongoose = require('mongoose');
-const { MONGO_URI } = require('../config');
+const config = require('../config');
 
-class DbService {
-  static async connect() {
+class DatabaseService {
+  async connect() {
     try {
-      await mongoose.connect(MONGO_URI);
-      console.log('✅ Connected to MongoDB.');
+      // ✅ التحقق من وجود URI
+      const uri = config.mongoUri || process.env.MONGO_URI || process.env.MONGODB_URI;
+      
+      console.log('🔍 Database URI check:');
+      console.log('config.mongoUri:', config.mongoUri ? '✅ Set' : '❌ Missing');
+      console.log('process.env.MONGO_URI:', process.env.MONGO_URI ? '✅ Set' : '❌ Missing');
+      console.log('Final URI being used:', uri ? '✅ Available' : '❌ Missing');
+
+      if (!uri) {
+        throw new Error('MongoDB URI is not defined. Please set MONGO_URI in environment variables.');
+      }
+
+      console.log(`🔗 Connecting to MongoDB...`);
+      
+      await mongoose.connect(uri, {
+        serverSelectionTimeoutMS: 5000,
+        socketTimeoutMS: 45000,
+        family: 4 // استخدام IPv4
+      });
+
+      console.log('✅ Connected to MongoDB successfully.');
     } catch (error) {
-      console.error('❌ MongoDB Connection Error:', error.message);
+      console.error(`❌ MongoDB Connection Error: ${error.message}`);
       process.exit(1);
     }
   }
-  static async disconnect() {
+
+  async disconnect() {
     await mongoose.disconnect();
+    console.log('🔌 Disconnected from MongoDB.');
   }
 }
-module.exports = DbService;
+
+module.exports = new DatabaseService();
