@@ -2,7 +2,7 @@
 const Cookie = require('../models/Cookie');
 
 class CookieManagerService {
-  // ✅ تفعيل الكوكيز
+  // ✅ تفعيل كوكيز
   async enableCookie(cookieData) {
     try {
       console.log('🍪 Enabling cookie...');
@@ -45,6 +45,39 @@ class CookieManagerService {
     }
   }
 
+  // ✅ الحصول على جميع الكوكيز (للمراقبة)
+  async getAllCookies() {
+    try {
+      const cookies = await Cookie.find({});
+      console.log(`📊 Found ${cookies.length} cookie entries`);
+      return cookies;
+    } catch (error) {
+      console.error(`❌ Error fetching cookies: ${error.message}`);
+      return [];
+    }
+  }
+
+  // ✅ إضافة كوكيز جديدة
+  async addCookies(accountName, cookies) {
+    try {
+      console.log(`🍪 Adding new cookies for: ${accountName}`);
+      
+      const cookieDoc = new Cookie({
+        accountName: accountName,
+        cookies: cookies,
+        status: 'ACTIVE',
+        lastUsedAt: new Date()
+      });
+
+      await cookieDoc.save();
+      console.log(`✅ Cookies added: ${accountName}`);
+      return cookieDoc;
+    } catch (error) {
+      console.error(`❌ Error adding cookies: ${error.message}`);
+      throw error;
+    }
+  }
+
   // ✅ حظر كوكيز
   async blockCookie(cookieId, reason = 'Blocked') {
     try {
@@ -75,11 +108,21 @@ class CookieManagerService {
     }
   }
 
-  // ✅ التحقق من صلاحية الكوكيز
+  // ✅ التحقق من صحة الكوكيز
   async validateCookies(cookies) {
     if (!cookies || !Array.isArray(cookies) || cookies.length === 0) return false;
     const required = ['datr', 'fr', 'c_user', 'xs'];
     return required.every(name => cookies.some(c => c.name === name && c.value));
+  }
+
+  // ✅ تحديث وقت استخدام الكوكيز
+  async updateCookieUsage(cookieId) {
+    try {
+      await Cookie.findByIdAndUpdate(cookieId, { lastUsedAt: new Date() });
+      console.log(`🔄 Cookie ${cookieId} usage updated`);
+    } catch (error) {
+      console.error(`❌ Error updating cookie usage: ${error.message}`);
+    }
   }
 }
 
