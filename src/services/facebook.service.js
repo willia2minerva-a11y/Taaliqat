@@ -7,9 +7,6 @@ class FacebookService {
     this.page = null;
   }
 
-  /**
-   * تهيئة المتصفح والجلسة بآلية خفيفة ومناسبة لبيئة Render
-   */
   async init(rawCookies) {
     try {
       if (!this.browser || !this.browser.isConnected()) {
@@ -31,7 +28,6 @@ class FacebookService {
 
       this.page = await this.browser.newPage();
 
-      // حظر الصور والوسائط لتسريع الأداء
       await this.page.setRequestInterception(true);
       this.page.on('request', (req) => {
         const resourceType = req.resourceType();
@@ -44,7 +40,6 @@ class FacebookService {
 
       this.page.setDefaultNavigationTimeout(45000);
 
-      // مسح الكوكيز القديمة وتغذية الجلسة بالكوكيز الجديدة
       const client = await this.page.target().createCDPSession();
       await client.send('Network.clearBrowserCookies');
 
@@ -68,45 +63,64 @@ class FacebookService {
   }
 
   /**
-   * تنفيذ وتأكيد النشر الفعلي على المنشور واستخراج الرابط المباشر
+   * جلب منشور جديد غير معلق عليه سابقاً واستخراج نصه ورابطه المباشر
    */
-  async postComment(rawCookies, targetUrl, commentText) {
+  async fetchNextPost(rawCookies, groupUrl, visitedPosts = []) {
     try {
       await this.init(rawCookies);
+      await this.page.goto(groupUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
-      // 1. الانتقال إلى الصفحة المطلوبة
-      await this.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      // البحث عن روابط المنشورات في الواجهة
+      const postLinks = await this.page.$$eval('a', anchors => {
+        return anchors
+          .map(a => ({ href: a.href, text: a.innerText }))
+          .filter(a => a.href.includes('/story.php') || a.href.includes('/groups/') || a.href.includes('/posts/'));
+      });
 
-      // 2. التحقق من وجود حقل الإدخال على mbasic.facebook.com
+      for (const link of postLinks) {
+        // استخراج معرّف أو رابط نظيف
+        const cleanUrl = link.href.split('?')[0];
+        if (!visitedPosts.includes(cleanUrl) && !visitedPosts.includes(link.href)) {
+          // الانتقال للمنشور لقراءة نصه
+          await this.page.goto(link.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          
+          const postText = await this.page.evaluate(() => {
+            const body = document.querySelector('p, article, .userContent, span');
+            return body ? body.innerText : '';
+          });
+
+          return {
+            postUrl: link.href,
+            cleanUrl: cleanUrl,
+            postText: postText || 'منشور بدون نص'
+          };
+        }
+      }
+
+      throw new Error('لم يتم العثور على منشورات جديدة غير معلق عليها');
+    } catch (error) {
+      throw new Error(`فشل جلب المنشور التالي: ${error.message}`);
+    }
+  }
+
+  /**
+   * تنفيذ تعليق منفرد على الصفحة الحالية
+   */
+  async submitComment(commentText) {
+    try {
       const textareaSelector = 'textarea[name="comment_text"], textarea';
       await this.page.waitForSelector(textareaSelector, { timeout: 15000 });
+      await this.page.type(textareaSelector, commentText, { delay: 30 });
 
-      // 3. كتابة التعليق
-      await this.page.type(textareaSelector, commentText, { delay: 50 });
-
-      // 4. البحث عن زر النشر واختياره
       const submitSelector = 'input[type="submit"][name="post"], input[type="submit"]';
-      
       await Promise.all([
         this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
         this.page.click(submitSelector)
       ]);
 
-      // 5. استخراج رابط الصفحة الحقيقي بعد التوجيه المباشر للمنشور/التعليق
-      const actualPostUrl = this.page.url();
-
-      return {
-        success: true,
-        actualUrl: actualPostUrl
-      };
-
+      return true;
     } catch (error) {
-      throw new Error(`فشل تنفيذ التعليق الفعلي: ${error.message}`);
-    } finally {
-      if (this.page) {
-        await this.page.close().catch(() => {});
-        this.page = null;
-      }
+      throw new Error(`فشل كتابة التعليق: ${error.message}`);
     }
   }
 
@@ -123,4 +137,3 @@ class FacebookService {
 }
 
 module.exports = new FacebookService();
-
