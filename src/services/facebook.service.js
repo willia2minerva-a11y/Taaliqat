@@ -8,12 +8,10 @@ class FacebookService {
   }
 
   /**
-   * تهيئة وتجهيز متصفح Puppeteer وجلسة العمل بآلية محسّنة لبيئة Render
-   * @param {Array} rawCookies - مصفوفة الكوكيز الخاصة بالحساب
+   * تهيئة المتصفح والجلسة بآلية خفيفة ومناسبة لبيئة Render
    */
   async init(rawCookies) {
     try {
-      // إطلاق المتصفح إذا لم يكن يعمل سابقاً أو تم فصله
       if (!this.browser || !this.browser.isConnected()) {
         this.browser = await puppeteer.launch({
           headless: true,
@@ -33,7 +31,7 @@ class FacebookService {
 
       this.page = await this.browser.newPage();
 
-      // حظر أصول الوسائط المباشرة لتسريع زمن استجابة التصفح
+      // حظر الصور والوسائط لتسريع الأداء
       await this.page.setRequestInterception(true);
       this.page.on('request', (req) => {
         const resourceType = req.resourceType();
@@ -46,11 +44,10 @@ class FacebookService {
 
       this.page.setDefaultNavigationTimeout(45000);
 
-      // مسح الكوكيز القديمة عبر CDP لضمان عدم تداخل الجلسات
+      // مسح الكوكيز القديمة وتغذية الجلسة بالكوكيز الجديدة
       const client = await this.page.target().createCDPSession();
       await client.send('Network.clearBrowserCookies');
 
-      // تهيئة الكوكيز وتنسيق النطاقات الخاصة بفيسبوك
       if (rawCookies && Array.isArray(rawCookies)) {
         const formattedCookies = rawCookies.map(cookie => {
           const { sameSite, ...rest } = cookie;
@@ -71,28 +68,41 @@ class FacebookService {
   }
 
   /**
-   * تنفيذ عملية التوجه للمنشور ونشر التعليق المطلوب
-   * @param {Array} rawCookies - كوكيز الحساب المنفذ
-   * @param {string} postUrl - رابط المنشور المستهدف
-   * @param {string} commentText - نص التعليق
+   * تنفيذ وتأكيد النشر الفعلي على المنشور واستخراج الرابط المباشر
    */
-  async postComment(rawCookies, postUrl, commentText) {
+  async postComment(rawCookies, targetUrl, commentText) {
     try {
-      // تهيئة وتغذية الجلسة بالكوكيز قبل التنفيذ
       await this.init(rawCookies);
 
-      // التوجه إلى رابط المنشور بصيغة domcontentloaded لتفادي انتهاء المهلة
-      await this.page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      // 1. الانتقال إلى الصفحة المطلوبة
+      await this.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
-      // === تفاعل إضافة التعليق عبر الواجهة ===
-      // يتم تفعيل وتكييف السلكتور حسَب الواجهة المستهدفة (mbasic / desktop)
-      // await this.page.type('textarea', commentText);
+      // 2. التحقق من وجود حقل الإدخال على mbasic.facebook.com
+      const textareaSelector = 'textarea[name="comment_text"], textarea';
+      await this.page.waitForSelector(textareaSelector, { timeout: 15000 });
 
-      return true;
+      // 3. كتابة التعليق
+      await this.page.type(textareaSelector, commentText, { delay: 50 });
+
+      // 4. البحث عن زر النشر واختياره
+      const submitSelector = 'input[type="submit"][name="post"], input[type="submit"]';
+      
+      await Promise.all([
+        this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
+        this.page.click(submitSelector)
+      ]);
+
+      // 5. استخراج رابط الصفحة الحقيقي بعد التوجيه المباشر للمنشور/التعليق
+      const actualPostUrl = this.page.url();
+
+      return {
+        success: true,
+        actualUrl: actualPostUrl
+      };
+
     } catch (error) {
-      throw error;
+      throw new Error(`فشل تنفيذ التعليق الفعلي: ${error.message}`);
     } finally {
-      // إغلاق التبويب فقط بعد انتهاء العملية لتحرير الذاكرة وإبقاء المتصفح رهن الاستخدام
       if (this.page) {
         await this.page.close().catch(() => {});
         this.page = null;
@@ -100,9 +110,6 @@ class FacebookService {
     }
   }
 
-  /**
-   * إغلاق الجلسة والمتصفح بشكل آمن عند الحاجة
-   */
   async close() {
     if (this.page) {
       await this.page.close().catch(() => {});
@@ -115,5 +122,5 @@ class FacebookService {
   }
 }
 
-// 💡 تصدير Singleton Instance لضمان استدعاء الدوال مباشرة في الـ Worker والـ Controllers
 module.exports = new FacebookService();
+
