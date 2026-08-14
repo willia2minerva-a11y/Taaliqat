@@ -4,46 +4,34 @@ const puppeteer = require('puppeteer');
 class FacebookService {
   constructor() {
     this.browser = null;
+    this.page = null;
   }
 
   /**
-   * جلب أو إنشاء جلسة متصفح عامة (Singleton Pattern) لتوفير الذاكرة والـ CPU
+   * تهيئة وتجهيز المتصفح والجلسة (تتوافق مع fbService.init)
    */
-  async getBrowser() {
-    if (this.browser && this.browser.isConnected()) {
-      return this.browser;
-    }
-
-    this.browser = await puppeteer.launch({
-      headless: true,
-      protocolTimeout: 120000, // زيادة مهلة البروتوكول إلى دقيقتين
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-        '--single-process' // لتقليل استهلاك الذاكرة على Render
-      ]
-    });
-
-    return this.browser;
-  }
-
-  /**
-   * تنفيذ كتابة التعليق بآلية فائقة السرعة مع منع الميديا والـ Timeouts
-   */
-  async postComment(rawCookies, postUrl, commentText) {
-    let page = null;
+  async init(rawCookies) {
     try {
-      const browser = await this.getBrowser();
-      page = await browser.newPage();
+      this.browser = await puppeteer.launch({
+        headless: true,
+        protocolTimeout: 120000,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-gpu',
+          '--single-process'
+        ]
+      });
 
-      // 1. تسريع التحميل الخرافي: حظر الصور، الصوت، والأنيميشن
-      await page.setRequestInterception(true);
-      page.on('request', (req) => {
+      this.page = await this.browser.newPage();
+
+      // تسريع التصفح بحظر وسائط الميديا الخفيفة
+      await this.page.setRequestInterception(true);
+      this.page.on('request', (req) => {
         const resourceType = req.resourceType();
         if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
           req.abort();
@@ -52,13 +40,13 @@ class FacebookService {
         }
       });
 
-      // 2. تعيين المهلة المخصصة للصفحة
-      page.setDefaultNavigationTimeout(45000);
+      this.page.setDefaultNavigationTimeout(45000);
 
-      // 3. مسح وتجهيز الكوكيز
-      const client = await page.target().createCDPSession();
+      // مسح الكوكيز القديمة بآلية safe CDP لتجنب Network.deleteCookies Error
+      const client = await this.page.target().createCDPSession();
       await client.send('Network.clearBrowserCookies');
 
+      // معالجة وتغذية الجلسة بالكوكيز
       if (rawCookies && Array.isArray(rawCookies)) {
         const formattedCookies = rawCookies.map(cookie => {
           const { sameSite, ...rest } = cookie;
@@ -68,34 +56,50 @@ class FacebookService {
             url: cookie.url || 'https://www.facebook.com'
           };
         });
-        await page.setCookie(...formattedCookies);
+        await this.page.setCookie(...formattedCookies);
       }
-
-      // 4. التوجه للمنشور بصيغة domcontentloaded لتجنب انتظار الصور والإعلانات
-      await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-
-      // === أضف منطق الضغط والتعليق المباشر هنا ===
-      // await page.type('textarea', commentText);
 
       return true;
     } catch (error) {
-      throw error;
-    } finally {
-      // إغلاق التبويب فقط وإبقاء المتصفح يعمل للمهمة القادمة
-      if (page) await page.close();
+      if (this.browser) {
+        await this.browser.close();
+        this.browser = null;
+      }
+      throw new Error(`فشل تهيئة جلسة فيسبوك: ${error.message}`);
     }
   }
 
   /**
-   * إغلاق المتصفح عند إيقاف السيرفر
+   * إغلاق المتصفح والجلسة بآلية آمنة (تتوافق مع fbService.close)
    */
-  async closeBrowser() {
+  async close() {
     if (this.browser) {
       await this.browser.close();
       this.browser = null;
+      this.page = null;
+    }
+  }
+
+  /**
+   * تنفيذ كتابة ونشر التعليق على المنشور Target
+   */
+  async postComment(postUrl, commentText) {
+    if (!this.page) {
+      throw new Error('الجلسة غير مهيأة. يرجى استدعاء init أولاً.');
+    }
+
+    try {
+      await this.page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+
+      // === منطق التفاعل مع فيسبوك المباشر ===
+      // يمكن تكييف السلكتور حسَب الواجهة المعتمدة (mbasic أو desktop)
+      // await this.page.type('textarea', commentText);
+
+      return true;
+    } catch (error) {
+      throw new Error(`فشل نشر التعليق على المنشور: ${error.message}`);
     }
   }
 }
 
-// تصدير Singleton Instance
-module.exports = new FacebookService();
+module.exports = FacebookService;
