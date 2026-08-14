@@ -26,40 +26,40 @@ async function startWorkerLoop() {
       job.isRunning = false;
       await job.save();
       if (ADMIN_FB_ID) {
-        await MessengerService.sendMessage(ADMIN_FB_ID, '🚨 توقفت المهمة! لا توجد حسابات كوكيز نشطة حالياً في النظام.');
+        await MessengerService.sendMessage(ADMIN_FB_ID, '🚨 توقفت المهمة! لا توجد حسابات كوكيز نشطة حالياً.');
       }
       return;
     }
 
-    const targetUrl = 'https://mbasic.facebook.com'; // أو رابط المنشور المستهدف
+    // رابط الهدف (يمكن تخصيصه من المهمة أو تعيين رابط منشور مباشر)
+    const targetUrl = 'https://mbasic.facebook.com';
 
     try {
-      await facebookService.postComment(activeCookie.data, targetUrl, job.fixedComment);
+      // تنفيذ عملية التعليق الفعلية
+      const result = await facebookService.postComment(activeCookie.data, targetUrl, job.fixedComment);
 
-      // 1. تحديث العدادات
-      job.processedPosts += 1;
-      
-      // 2. تسجيل السجل مع رابط المنشور والتعليق
-      job.logs.push({
-        cookieName: activeCookie.name,
-        postUrl: targetUrl,
-        commentText: job.fixedComment,
-        status: 'SUCCESS'
-      });
-      // الاحتفاظ بآخر 50 سجل فقط للحد من استهلاك الذاكرة
-      if (job.logs.length > 50) job.logs.shift();
+      if (result && result.success) {
+        // تحديث العدادات والتأكد من تسجيل القيم بدون undefined
+        job.processedPosts += 1;
+        job.logs.push({
+          cookieName: activeCookie.name || 'حساب غير معروف',
+          postUrl: result.actualUrl || targetUrl,
+          commentText: job.fixedComment || 'لا يوجد نص',
+          status: 'SUCCESS'
+        });
 
-      await job.save();
+        if (job.logs.length > 50) job.logs.shift();
+        await job.save();
 
-      activeCookie.successCount += 1;
-      await activeCookie.save();
+        activeCookie.successCount += 1;
+        await activeCookie.save();
 
-      console.log(`📈 تم النشر بنجاح بواسطة [${activeCookie.name}]!`);
+        console.log(`📈 تم التعليق بنجاح بواسطة [${activeCookie.name}] على الرابط: ${result.actualUrl}`);
+      }
 
     } catch (err) {
       console.error(`⚠️ خطأ في الحساب [${activeCookie.name}]: ${err.message}`);
-      
-      // فحوصات الأخطاء الحرجة للحساب (Login / Checkpoint / Block)
+
       const isCriticalError = err.message.includes('login') || 
                               err.message.includes('checkpoint') || 
                               err.message.includes('blocked');
@@ -69,7 +69,6 @@ async function startWorkerLoop() {
         activeCookie.failureReason = err.message;
         await activeCookie.save();
 
-        // 🔔 إرسال تنبيه فوري للمستلِم (المشرف) عبر الميسنجر
         if (ADMIN_FB_ID) {
           const alertMsg = `⚠️ **تنبيه عطل حساب!**\n\n` +
             `• الحساب: [${activeCookie.name}]\n` +
@@ -81,11 +80,11 @@ async function startWorkerLoop() {
         }
       }
 
-      // تسجيل الفشل في السجلات
+      // تسجيل الفشل مع القيم الاحتياطية لتفادي undefined
       job.logs.push({
-        cookieName: activeCookie.name,
+        cookieName: activeCookie.name || 'حساب غير معروف',
         postUrl: targetUrl,
-        commentText: job.fixedComment,
+        commentText: job.fixedComment || 'لا يوجد نص',
         status: 'FAILED',
         errorDetails: err.message
       });
