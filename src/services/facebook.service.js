@@ -4,131 +4,166 @@ const puppeteer = require('puppeteer');
 class FacebookService {
   constructor() {
     this.browser = null;
-    this.page = null;
-  }
-
-  async init(rawCookies) {
-    try {
-      if (!this.browser || !this.browser.isConnected()) {
-        this.browser = await puppeteer.launch({
-          headless: true,
-          protocolTimeout: 120000,
-          args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu',
-            '--single-process'
-          ]
-        });
-      }
-
-      this.page = await this.browser.newPage();
-
-      await this.page.setRequestInterception(true);
-      this.page.on('request', (req) => {
-        const resourceType = req.resourceType();
-        if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
-          req.abort();
-        } else {
-          req.continue();
-        }
-      });
-
-      this.page.setDefaultNavigationTimeout(45000);
-
-      const client = await this.page.target().createCDPSession();
-      await client.send('Network.clearBrowserCookies');
-
-      if (rawCookies && Array.isArray(rawCookies)) {
-        const formattedCookies = rawCookies.map(cookie => {
-          const { sameSite, ...rest } = cookie;
-          return {
-            ...rest,
-            domain: cookie.domain || '.facebook.com',
-            url: cookie.url || 'https://www.facebook.com'
-          };
-        });
-        await this.page.setCookie(...formattedCookies);
-      }
-
-      return true;
-    } catch (error) {
-      await this.close();
-      throw new Error(`فشل تهيئة جلسة فيسبوك: ${error.message}`);
-    }
   }
 
   /**
-   * جلب منشور جديد غير معلق عليه سابقاً واستخراج نصه ورابطه المباشر
+   * تهيئة المتصفح المستقر لبيئة Render المحدودة
+   */
+  async _getBrowser() {
+    if (!this.browser || !this.browser.isConnected()) {
+      this.browser = await puppeteer.launch({
+        headless: true,
+        protocolTimeout: 120000,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-gpu',
+          '--single-process'
+        ]
+      });
+    }
+    return this.browser;
+  }
+
+  /**
+   * إنشاء تبويب جديد وتهيئته مع الكوكيز والحظر اللطيف للوسائط
+   */
+  async _createCleanPage(rawCookies) {
+    const browser = await this._getBrowser();
+    const page = await browser.newPage();
+
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const resourceType = req.resourceType();
+      if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+
+    page.setDefaultNavigationTimeout(35000);
+
+    const client = await page.target().createCDPSession();
+    await client.send('Network.clearBrowserCookies');
+
+    if (rawCookies && Array.isArray(rawCookies)) {
+      const formattedCookies = rawCookies.map(cookie => {
+        const { sameSite, ...rest } = cookie;
+        return {
+          ...rest,
+          domain: cookie.domain || '.facebook.com',
+          url: cookie.url || 'https://www.facebook.com'
+        };
+      });
+      await page.setCookie(...formattedCookies);
+    }
+
+    return page;
+  }
+
+  /**
+   * جلب المنشور التالي بشكل معزول وآمن تماماً
    */
   async fetchNextPost(rawCookies, groupUrl, visitedPosts = []) {
-    try {
-      await this.init(rawCookies);
-      await this.page.goto(groupUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    let mainPage = null;
 
-      // البحث عن روابط المنشورات في الواجهة
-      const postLinks = await this.page.$$eval('a', anchors => {
+    try {
+      mainPage = await this._createCleanPage(rawCookies);
+      await mainPage.goto(groupUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
+
+      // 1. استخراج كل الروابط المتاحة أولاً دفعة واحدة
+      const candidateLinks = await mainPage.$$eval('a', anchors => {
         return anchors
-          .map(a => ({ href: a.href, text: a.innerText }))
-          .filter(a => a.href.includes('/story.php') || a.href.includes('/groups/') || a.href.includes('/posts/'));
+          .map(a => a.href)
+          .filter(href => href && (href.includes('/story.php') || href.includes('/groups/') || href.includes('/posts/')));
       });
 
-      for (const link of postLinks) {
-        // استخراج معرّف أو رابط نظيف
-        const cleanUrl = link.href.split('?')[0];
-        if (!visitedPosts.includes(cleanUrl) && !visitedPosts.includes(link.href)) {
-          // الانتقال للمنشور لقراءة نصه
-          await this.page.goto(link.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
-          
-          const postText = await this.page.evaluate(() => {
-            const body = document.querySelector('p, article, .userContent, span');
-            return body ? body.innerText : '';
-          });
+      // إغلاق التبويب الرئيسي فوراً لتوفير الذاكرة
+      await mainPage.close();
+      mainPage = null;
 
-          return {
-            postUrl: link.href,
-            cleanUrl: cleanUrl,
-            postText: postText || 'منشور بدون نص'
-          };
+      // 2. البحث عن أول رابط لم يتم زيارته
+      for (const linkUrl of candidateLinks) {
+        const cleanUrl = linkUrl.split('?')[0];
+
+        if (!visitedPosts.includes(cleanUrl) && !visitedPosts.includes(linkUrl)) {
+          // فتح تبويب معزول خصيصاً لمطالعة المنشور المستهدف
+          let postPage = null;
+          try {
+            postPage = await this._createCleanPage(rawCookies);
+            await postPage.goto(linkUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+            // قراءة النص بحذر
+            const postText = await postPage.evaluate(() => {
+              const elements = Array.from(document.querySelectorAll('p, article, div, span'));
+              const longestTextNode = elements.reduce((max, el) => {
+                const text = el.innerText ? el.innerText.trim() : '';
+                return text.length > max.length ? text : max;
+              }, '');
+              return longestTextNode;
+            });
+
+            await postPage.close();
+
+            return {
+              postUrl: linkUrl,
+              cleanUrl: cleanUrl,
+              postText: postText || 'منشور تفاعلي مصور'
+            };
+
+          } catch (singlePostError) {
+            console.warn(`⚠️ تعذر جلب تفاصيل المنشور (${linkUrl}): ${singlePostError.message}`);
+            if (postPage) await postPage.close().catch(() => {});
+            // استمرار الحلقة لتقييم الرابط التالي
+          }
         }
       }
 
-      throw new Error('لم يتم العثور على منشورات جديدة غير معلق عليها');
+      throw new Error('لم يتم العثور على منشورات جديدة غير معلق عليها حالياً');
+
     } catch (error) {
+      if (mainPage) await mainPage.close().catch(() => {});
       throw new Error(`فشل جلب المنشور التالي: ${error.message}`);
     }
   }
 
   /**
-   * تنفيذ تعليق منفرد على الصفحة الحالية
+   * تنفيذ كتابة ونشر التعليق على رابط منشور محدد
    */
-  async submitComment(commentText) {
+  async submitComment(rawCookies, postUrl, commentText) {
+    let page = null;
     try {
+      page = await this._createCleanPage(rawCookies);
+      await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
+
       const textareaSelector = 'textarea[name="comment_text"], textarea';
-      await this.page.waitForSelector(textareaSelector, { timeout: 15000 });
-      await this.page.type(textareaSelector, commentText, { delay: 30 });
+      await page.waitForSelector(textareaSelector, { timeout: 15000 });
+      await page.type(textareaSelector, commentText, { delay: 40 });
 
       const submitSelector = 'input[type="submit"][name="post"], input[type="submit"]';
+      
       await Promise.all([
-        this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
-        this.page.click(submitSelector)
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}),
+        page.click(submitSelector)
       ]);
 
       return true;
     } catch (error) {
       throw new Error(`فشل كتابة التعليق: ${error.message}`);
+    } finally {
+      if (page) await page.close().catch(() => {});
     }
   }
 
+  /**
+   * إغلاق المتصفح عند إيقاف الخدمة
+   */
   async close() {
-    if (this.page) {
-      await this.page.close().catch(() => {});
-      this.page = null;
-    }
     if (this.browser) {
       await this.browser.close().catch(() => {});
       this.browser = null;
