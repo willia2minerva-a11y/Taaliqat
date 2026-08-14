@@ -1,30 +1,57 @@
+// src/server.js
+require('dotenv').config();
 const express = require('express');
-const DbService = require('./services/db.service');
-const WebhookController = require('./controllers/webhook.controller');
-const { startWorkerLoop } = require('./worker');
-const { PORT } = require('./config');
+const dbService = require('./services/db.service');
+const webhookRoutes = require('./routes/webhook.routes');
+const atomicWorker = require('./worker');
 
 const app = express();
+const PORT = process.env.PORT || 10000;
+
+// Middleware
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// مسارات فيسبوك Webhook
-app.get('/webhook', WebhookController.verifyWebhook);
-app.post('/webhook', WebhookController.handleMessage);
+// Routes
+app.use('/webhook', webhookRoutes);
 
-// Health check endpoint لخدمة Render
+// Root Health Check Route
 app.get('/', (req, res) => {
-  res.status(200).send('DevMate Facebook Automation Server is Live.');
+  res.status(200).json({
+    status: 'success',
+    message: 'Taaliqat Bot Server is running smoothly!',
+    timestamp: new Date()
+  });
 });
 
+/**
+ * نقطة الانطلاق الرئيسية للسيرفر وربط الخدمات
+ */
 async function main() {
-  await DbService.connect();
+  try {
+    // 1. الاتصال بقاعدة البيانات MongoDB
+    await dbService.connect();
 
-  app.listen(PORT, () => {
-    console.log(`🚀 Express Server running on port ${PORT}`);
-  });
+    // 2. تشغيل المجدول الذري (Atomic Worker Loop)
+    if (atomicWorker && typeof atomicWorker.start === 'function') {
+      atomicWorker.start();
+      console.log('🤖 Atomic Worker initialized and running.');
+    } else if (typeof atomicWorker === 'function') {
+      atomicWorker();
+      console.log('🤖 Worker function initialized.');
+    } else {
+      console.warn('⚠️ Worker component exported without standard start method.');
+    }
 
-  // إطلاق محرك الأتمتة في الخلفية
-  startWorkerLoop();
+    // 3. بدء استقبال الطلبات عبر Express
+    app.listen(PORT, () => {
+      console.log(`🚀 Express Server running on port ${PORT}`);
+    });
+
+  } catch (error) {
+    console.error(`❌ Server Initialization Failed: ${error.message}`);
+    process.exit(1);
+  }
 }
 
 main();
