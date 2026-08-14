@@ -1,22 +1,74 @@
-require('dotenv').config();
+// src/index.js
+// ✅ هذا الملف يصدر جميع الخدمات والنماذج للاستخدام السهل
 
-const config = {
-  port: process.env.PORT || 10000,
+// ===== Config =====
+const config = require('./config');
 
-  mongoUri: process.env.MONGODB_URI || process.env.MONGO_URI,
+// ===== Services =====
+const dbService = require('./services/db.service');
+const facebookService = require('./services/facebook.service');
+const geminiService = require('./services/gemini.service');
+const jobService = require('./services/job.service');
+const messengerService = require('./services/messenger.service');
+const cookieManagerService = require('./services/cookieManager.service');
 
-  geminiApiKey: process.env.GEMINI_API_KEY,
+// ===== Models =====
+const JobState = require('./models/JobState');
+const Cookie = require('./models/Cookie');
+const Post = require('./models/Post');
 
-  verifyToken: process.env.VERIFY_TOKEN,
+// ===== Controllers =====
+const webhookController = require('./controllers/webhook.controller');
 
-  pageAccessToken: process.env.PAGE_ACCESS_TOKEN || process.env.FB_PAGE_ACCESS_TOKEN,
+// ===== Routes =====
+const webhookRoutes = require('./routes/webhook.routes');
 
-  fbGroupUrl: process.env.FB_GROUP_URL,
+// ===== Middlewares =====
+const errorHandler = require('./middlewares/errorHandler');
 
-  adminFbId: process.env.ADMIN_FB_ID
+// ===== Worker =====
+const atomicWorker = require('./worker');
+
+// ===== Server =====
+const server = require('./server');
+
+// ✅ تصدير كل شيء للاستخدام في ملفات أخرى
+module.exports = {
+  // Config
+  config,
+  
+  // Services
+  dbService,
+  facebookService,
+  geminiService,
+  jobService,
+  messengerService,
+  cookieManagerService,
+  
+  // Models
+  JobState,
+  Cookie,
+  Post,
+  
+  // Controllers
+  webhookController,
+  
+  // Routes
+  webhookRoutes,
+  
+  // Middlewares
+  errorHandler,
+  
+  // Worker
+  atomicWorker,
+  
+  // Server
+  server
 };
 
-console.log('🔍 Config loaded');
-console.log('VERIFY_TOKEN:', config.verifyToken ? '✅ Set' : '❌ Missing');
-
-module.exports = config;
+// ✅ طباعة رسالة تأكيد
+console.log('📦 Taaliqat Bot modules loaded successfully!');
+console.log(`🔑 VERIFY_TOKEN: ${config.verifyToken ? '✅ Configured' : '❌ NOT SET!'}`);
+console.log(`🗄️  Database: ${config.mongoUri ? '✅ Configured' : '❌ NOT SET!'}`);
+console.log(`🤖 Gemini AI: ${config.geminiApiKey ? '✅ Configured' : '❌ NOT SET!'}`);
+console.log(`📱 Page Access Token: ${config.pageAccessToken ? '✅ Configured' : '❌ NOT SET!'}`);
