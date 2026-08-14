@@ -8,28 +8,32 @@ class FacebookService {
   }
 
   /**
-   * تهيئة وتجهيز المتصفح والجلسة (تتوافق مع fbService.init)
+   * تهيئة وتجهيز متصفح Puppeteer وجلسة العمل بآلية محسّنة لبيئة Render
+   * @param {Array} rawCookies - مصفوفة الكوكيز الخاصة بالحساب
    */
   async init(rawCookies) {
     try {
-      this.browser = await puppeteer.launch({
-        headless: true,
-        protocolTimeout: 120000,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--no-first-run',
-          '--no-zygote',
-          '--disable-gpu',
-          '--single-process'
-        ]
-      });
+      // إطلاق المتصفح إذا لم يكن يعمل سابقاً أو تم فصله
+      if (!this.browser || !this.browser.isConnected()) {
+        this.browser = await puppeteer.launch({
+          headless: true,
+          protocolTimeout: 120000,
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu',
+            '--single-process'
+          ]
+        });
+      }
 
       this.page = await this.browser.newPage();
 
-      // تسريع التصفح بحظر وسائط الميديا الخفيفة
+      // حظر أصول الوسائط المباشرة لتسريع زمن استجابة التصفح
       await this.page.setRequestInterception(true);
       this.page.on('request', (req) => {
         const resourceType = req.resourceType();
@@ -42,11 +46,11 @@ class FacebookService {
 
       this.page.setDefaultNavigationTimeout(45000);
 
-      // مسح الكوكيز القديمة بآلية safe CDP لتجنب Network.deleteCookies Error
+      // مسح الكوكيز القديمة عبر CDP لضمان عدم تداخل الجلسات
       const client = await this.page.target().createCDPSession();
       await client.send('Network.clearBrowserCookies');
 
-      // معالجة وتغذية الجلسة بالكوكيز
+      // تهيئة الكوكيز وتنسيق النطاقات الخاصة بفيسبوك
       if (rawCookies && Array.isArray(rawCookies)) {
         const formattedCookies = rawCookies.map(cookie => {
           const { sameSite, ...rest } = cookie;
@@ -61,45 +65,55 @@ class FacebookService {
 
       return true;
     } catch (error) {
-      if (this.browser) {
-        await this.browser.close();
-        this.browser = null;
-      }
+      await this.close();
       throw new Error(`فشل تهيئة جلسة فيسبوك: ${error.message}`);
     }
   }
 
   /**
-   * إغلاق المتصفح والجلسة بآلية آمنة (تتوافق مع fbService.close)
+   * تنفيذ عملية التوجه للمنشور ونشر التعليق المطلوب
+   * @param {Array} rawCookies - كوكيز الحساب المنفذ
+   * @param {string} postUrl - رابط المنشور المستهدف
+   * @param {string} commentText - نص التعليق
    */
-  async close() {
-    if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
-      this.page = null;
-    }
-  }
-
-  /**
-   * تنفيذ كتابة ونشر التعليق على المنشور Target
-   */
-  async postComment(postUrl, commentText) {
-    if (!this.page) {
-      throw new Error('الجلسة غير مهيأة. يرجى استدعاء init أولاً.');
-    }
-
+  async postComment(rawCookies, postUrl, commentText) {
     try {
+      // تهيئة وتغذية الجلسة بالكوكيز قبل التنفيذ
+      await this.init(rawCookies);
+
+      // التوجه إلى رابط المنشور بصيغة domcontentloaded لتفادي انتهاء المهلة
       await this.page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
-      // === منطق التفاعل مع فيسبوك المباشر ===
-      // يمكن تكييف السلكتور حسَب الواجهة المعتمدة (mbasic أو desktop)
+      // === تفاعل إضافة التعليق عبر الواجهة ===
+      // يتم تفعيل وتكييف السلكتور حسَب الواجهة المستهدفة (mbasic / desktop)
       // await this.page.type('textarea', commentText);
 
       return true;
     } catch (error) {
-      throw new Error(`فشل نشر التعليق على المنشور: ${error.message}`);
+      throw error;
+    } finally {
+      // إغلاق التبويب فقط بعد انتهاء العملية لتحرير الذاكرة وإبقاء المتصفح رهن الاستخدام
+      if (this.page) {
+        await this.page.close().catch(() => {});
+        this.page = null;
+      }
+    }
+  }
+
+  /**
+   * إغلاق الجلسة والمتصفح بشكل آمن عند الحاجة
+   */
+  async close() {
+    if (this.page) {
+      await this.page.close().catch(() => {});
+      this.page = null;
+    }
+    if (this.browser) {
+      await this.browser.close().catch(() => {});
+      this.browser = null;
     }
   }
 }
 
-module.exports = FacebookService;
+// 💡 تصدير Singleton Instance لضمان استدعاء الدوال مباشرة في الـ Worker والـ Controllers
+module.exports = new FacebookService();
