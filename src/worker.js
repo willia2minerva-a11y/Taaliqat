@@ -3,120 +3,103 @@ const JobState = require('./models/JobState');
 const Cookie = require('./models/Cookie');
 const facebookService = require('./services/facebook.service');
 const geminiService = require('./services/gemini.service');
-const MessengerService = require('./services/messenger.service');
-const { ADMIN_FB_ID } = require('./config');
 
-async function startWorkerLoop() {
-  console.log('⚙️ Background Worker Loop Started.');
+class AtomicWorker {
+  constructor() {
+    this.isProcessing = false;
+  }
 
-  const LOOP_INTERVAL_MS = 15000;
+  /**
+   * تشغيل حلقة الفحص المتقطع
+   */
+  start() {
+    console.log('🚀 Atomic Worker Started...');
+    // فحص كل 45 ثانية لمعالجة منشور واحد بمرونة
+    setInterval(() => this.processNextTask(), 45000);
+  }
 
-  setInterval(async () => {
+  async processNextTask() {
+    if (this.isProcessing) return;
+
     try {
-      const job = await JobState.findOne({ isRunning: true });
-      if (!job) return;
+      this.isProcessing = true;
 
-      if (job.processedPosts >= job.targetPosts) {
-        job.isRunning = false;
-        await job.save();
-        if (ADMIN_FB_ID) {
-          await MessengerService.sendMessage(ADMIN_FB_ID, '🎉 اكتملت المهمة بنجاح واستوفيت جميع المنشورات المطلوبة!');
-        }
+      // 1. قراءة حالة المهمة الحالية من قاعدة البيانات
+      const job = await JobState.findOne({ jobId: 'main_job' });
+      if (!job || !job.isRunning) {
+        this.isProcessing = false;
         return;
       }
 
-      const activeCookie = await Cookie.findOne({ status: 'ACTIVE' });
-      if (!activeCookie) {
+      // 2. التحقق من اكتمال المهمة
+      if (job.completedCount >= job.totalTarget) {
         job.isRunning = false;
+        job.pendingPosts = [];
         await job.save();
-        if (ADMIN_FB_ID) {
-          await MessengerService.sendMessage(ADMIN_FB_ID, '🚨 توقفت المهمة! لا توجد حسابات كوكيز نشطة حالياً.');
-        }
+        console.log('✅ اكتملت المهمة بنجاح!');
+        this.isProcessing = false;
         return;
       }
 
-      try {
-        // 1. جلب منشور جديد معزول
-        const postData = await facebookService.fetchNextPost(
-          activeCookie.data,
-          job.groupUrl || 'https://mbasic.facebook.com',
-          job.visitedPosts || []
+      // 3. جلب أول حساب كوكيز نشط
+      const activeCookieDoc = await Cookie.findOne({ status: 'ACTIVE' });
+      if (!activeCookieDoc) {
+        console.error('❌ لا توجد حسابات كوكيز نشطة!');
+        this.isProcessing = false;
+        return;
+      }
+
+      // 4. إذا كانت قائمة الانتظار فارغة، قم باكتشاف منشورات جديدة
+      if (!job.pendingPosts || job.pendingPosts.length === 0) {
+        const discovered = await facebookService.discoverPendingPosts(
+          activeCookieDoc.cookies,
+          job.groupUrl,
+          job.visitedPosts
         );
 
-        // 2. توليد تعليق الذكاء الاصطناعي (أو الخطة B)
-        const aiResult = await geminiService.generateComment(postData.postText);
-
-        // 3. التعليق الأول (AI / الخطة B)
-        await facebookService.submitComment(activeCookie.data, postData.postUrl, aiResult.comment);
-
-        // 4. التعليق الثاني (الثابت / الهشتاج)
-        await facebookService.submitComment(activeCookie.data, postData.postUrl, job.fixedComment);
-
-        job.processedPosts += 1;
-        if (!job.visitedPosts) job.visitedPosts = [];
-        job.visitedPosts.push(postData.cleanUrl);
-
-        job.logs.push({
-          cookieName: activeCookie.name,
-          postUrl: postData.cleanUrl,
-          commentText: aiResult.comment,
-          fixedCommentText: job.fixedComment,
-          status: 'SUCCESS',
-          isAi: aiResult.isAi
-        });
-
-        if (job.logs.length > 50) job.logs.shift();
-        await job.save();
-
-        activeCookie.successCount += 1;
-        await activeCookie.save();
-
-        console.log(`✅ تم التعليق بنجاح على [${postData.cleanUrl}] بواسطة [${activeCookie.name}]`);
-
-        if (!aiResult.isAi && ADMIN_FB_ID) {
-          const warningMsg = `⚠️ **تنبيه الخطة B:**\n\n` +
-            `• المنشور: ${postData.cleanUrl}\n` +
-            `• السبب: ${aiResult.reason || 'تعذر التوليد'}\n` +
-            `• التعليق المكتوب: ${aiResult.comment}`;
-          await MessengerService.sendMessage(ADMIN_FB_ID, warningMsg);
+        if (discovered.length === 0) {
+          console.log('⌛ لم يتم العثور على منشورات جديدة حالياً، انتظار الدورة القادمة...');
+          this.isProcessing = false;
+          return;
         }
 
-      } catch (err) {
-        console.error(`⚠️ خطأ في حساب [${activeCookie.name}]: ${err.message}`);
-
-        const isCriticalError = err.message.includes('login') || 
-                                err.message.includes('checkpoint') || 
-                                err.message.includes('blocked');
-
-        if (isCriticalError) {
-          activeCookie.status = 'EXPIRED';
-          activeCookie.failureReason = err.message;
-          await activeCookie.save();
-
-          if (ADMIN_FB_ID) {
-            const alertMsg = `⚠️ **تنبيه عطل حساب!**\n\n` +
-              `• الحساب: [${activeCookie.name}]\n` +
-              `• السبب: ${err.message}\n` +
-              `💡 سيتم التبديل تلقائياً للحساب النشط التالي.`;
-            
-            await MessengerService.sendMessage(ADMIN_FB_ID, alertMsg);
-          }
-        }
-
-        job.logs.push({
-          cookieName: activeCookie.name,
-          postUrl: 'غير معروف',
-          commentText: 'فشل العملية',
-          status: 'FAILED',
-          errorDetails: err.message
-        });
+        job.pendingPosts = discovered;
         await job.save();
       }
 
-    } catch (globalError) {
-      console.error('❌ Global Worker Exception:', globalError.message);
+      // 5. سحب أول منشور من قائمة الانتظار
+      const targetPostUrl = job.pendingPosts.shift();
+
+      // 6. قراءة نص المنشور وتوليد التعليق
+      const postText = await facebookService.fetchPostText(activeCookieDoc.cookies, targetPostUrl);
+      const aiComment = await geminiService.generateSmartComment(postText, process.env.GEMINI_API_KEY);
+
+      // 7. نشر التعليق المزدوج (AI + Hashtag)
+      await facebookService.submitDualComments(
+        activeCookieDoc.cookies,
+        targetPostUrl,
+        aiComment,
+        job.customHashtag
+      );
+
+      // 8. تحديث قاعدة البيانات
+      job.visitedPosts.push(targetPostUrl);
+      job.completedCount += 1;
+      await job.save();
+
+      console.log(`🎉 [${job.completedCount}/${job.totalTarget}] تم التعليق بنجاح على: ${targetPostUrl}`);
+
+    } catch (error) {
+      console.error(`⚠️ خطأ أثناء تنفيذ المهمة الذرية: ${error.message}`);
+    } finally {
+      this.isProcessing = false;
+
+      // تحرير الذاكرة العشوائية صراحةً بعد كل عملية ذرية
+      if (global.gc) {
+        global.gc();
+      }
     }
-  }, LOOP_INTERVAL_MS);
+  }
 }
 
-module.exports = { startWorkerLoop };
+module.exports = new AtomicWorker();
