@@ -1,25 +1,52 @@
 // src/models/JobState.js
 const mongoose = require('mongoose');
 
-const JobStateSchema = new mongoose.Schema({
-  isRunning: { type: Boolean, default: false },
-  targetPosts: { type: Number, default: 100 },
-  processedPosts: { type: Number, default: 0 },
-  delaySeconds: { type: Number, default: 1 },
-  fixedComment: { type: String, default: '✯⁠[#عشيرة_البيجو]✯⁠' },
-  groupUrl: { type: String, default: 'https://mbasic.facebook.com' },
-  // مصفوفة حفظ المنشورات التي تم التعليق عليها لتجنب التكرار
-  visitedPosts: [{ type: String }],
-  logs: [{
-    cookieName: String,
-    postUrl: String,
-    commentText: String,
-    fixedCommentText: String,
-    status: String,
-    isAi: Boolean,
-    errorDetails: String,
-    timestamp: { type: Date, default: Date.now }
-  }]
-}, { timestamps: true });
+const jobStateSchema = new mongoose.Schema({
+  jobId: {
+    type: String,
+    required: true,
+    unique: true,
+    default: 'main_job'
+  },
+  isRunning: {
+    type: Boolean,
+    default: false
+  },
+  totalTarget: {
+    type: Number,
+    default: 0
+  },
+  completedCount: {
+    type: Number,
+    default: 0
+  },
+  groupUrl: {
+    type: String,
+    default: ''
+  },
+  customHashtag: {
+    type: String,
+    default: ''
+  },
+  // قائمة الانتظار الذرية للمنشورات المستخرجة
+  pendingPosts: [{
+    type: String
+  }],
+  // سجل المنشورات التي تم معالجتها لتفادي التكرار
+  visitedPosts: [{
+    type: String
+  }],
+  // تتبع حالة وصحة مفاتيح Gemini API للتحويل التلقائي للخطة B
+  apiKeyHealthy: {
+    type: Boolean,
+    default: true
+  },
+  lastApiFailure: {
+    type: Date,
+    default: null
+  }
+}, {
+  timestamps: true
+});
 
-module.exports = mongoose.model('JobState', JobStateSchema);
+module.exports = mongoose.model('JobState', jobStateSchema);
