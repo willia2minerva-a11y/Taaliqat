@@ -1,88 +1,89 @@
 // src/services/job.service.js
 const JobState = require('../models/JobState');
-const Cookie = require('../models/Cookie');
-const MessengerService = require('./messenger.service');
 
 class JobService {
-  static isProcessing = false;
-
-  /**
-   * دالة بدء الـ Worker الخلفي الذي يفحص المهام كل فترة زمنية
-   */
-  static initWorker(intervalMs = 10000) {
-    console.log('⚙️ Job Worker Initialized...');
-    setInterval(async () => {
-      if (JobService.isProcessing) return; // منع التداخل إذا كانت الدورة السابقة قيد التنفيذ
-      
-      try {
-        await JobService.processActiveJob();
-      } catch (error) {
-        console.error('❌ Error in Job Worker Cycle:', error.message);
-      }
-    }, intervalMs);
+  // ✅ الحصول على المهمة أو إنشاؤها
+  async getOrCreateJob() {
+    let job = await JobState.findOne({ jobId: 'main_job' });
+    if (!job) {
+      job = await JobState.create({
+        jobId: 'main_job',
+        isRunning: false,
+        totalTarget: 0,
+        completedCount: 0,
+        pendingPosts: [],
+        visitedPosts: []
+      });
+    }
+    return job;
   }
 
-  /**
-   * معالجة خطوة واحدة من المهمة النشطة
-   */
-  static async processActiveJob() {
-    const job = await JobState.findOne({ isRunning: true });
-    
-    // إذا لم تكن هناك مهمة قيد التشغيل أو اكتملت المنشورات
-    if (!job) return;
+  // ✅ بدء مهمة جديدة
+  async startNewJob(targetCount, groupUrl, customHashtag) {
+    let job = await this.getOrCreateJob();
+    job.isRunning = true;
+    job.totalTarget = targetCount;
+    job.completedCount = 0;
+    job.groupUrl = groupUrl;
+    job.customHashtag = customHashtag;
+    job.pendingPosts = [];
+    await job.save();
+    return job;
+  }
 
-    if (job.processedPosts >= job.targetPosts) {
-      job.isRunning = false;
+  // ✅ إيقاف المهمة
+  async stopJob() {
+    let job = await this.getOrCreateJob();
+    job.isRunning = false;
+    job.pendingPosts = [];
+    await job.save();
+    return job;
+  }
+
+  // ✅ تحديث التقدم
+  async updateProgress(postUrl) {
+    let job = await this.getOrCreateJob();
+    if (job.isRunning) {
+      job.completedCount += 1;
+      job.visitedPosts.push(postUrl);
       await job.save();
-      console.log('✅ Task Completed Successfully!');
-      return;
     }
+    return job;
+  }
 
-    JobService.isProcessing = true;
-
-    try {
-      // 1. جلب حساب كوكيز نشط
-      const activeCookie = await Cookie.findOne({ status: 'ACTIVE' });
-
-      if (!activeCookie) {
-        console.warn('⚠️ No active cookies available to perform action!');
-        // إيقاف المهمة مؤقتاً لتجنب المحاولات الفاشلة
-        job.isRunning = false;
-        await job.save();
-        JobService.isProcessing = false;
-        return;
-      }
-
-      // 2. محاكاة / تنفيذ طلب التعليق (أدخل منطق الاتصال الخاص بك هنا)
-      console.log(`🚀 Processing post ${job.processedPosts + 1}/${job.targetPosts} using cookie: ${activeCookie.name}`);
-      
-      // === منطق تنفيذ الطلب الخارجي لفيسبوك بـ Active Cookie ===
-      // const success = await FacebookApi.postComment(activeCookie.data, job.fixedComment);
-      const success = true; // محاكاة نجاح العملية
-
-      if (success) {
-        // 3. تحديث العداد وعدد نجاحات الكوكيز
-        job.processedPosts += 1;
-        await job.save();
-
-        activeCookie.successCount += 1;
-        await activeCookie.save();
-
-        console.log(`📈 Progress updated: ${job.processedPosts}/${job.targetPosts}`);
-      } else {
-        // في حال فشل الكوكيز
-        activeCookie.status = 'EXPIRED';
-        activeCookie.failureReason = 'Failed during execution cycle';
-        await activeCookie.save();
-      }
-
-    } catch (err) {
-      console.error('❌ Error executing job step:', err.message);
-    } finally {
-      JobService.isProcessing = false;
+  // ✅ إضافة منشورات معلقة
+  async addPendingPosts(posts) {
+    let job = await this.getOrCreateJob();
+    if (job.isRunning) {
+      const newPosts = posts.filter(p => !job.visitedPosts.includes(p) && !job.pendingPosts.includes(p));
+      job.pendingPosts = [...job.pendingPosts, ...newPosts];
+      await job.save();
     }
+    return job;
+  }
+
+  // ✅ الحصول على منشور تالٍ
+  async getNextPendingPost() {
+    let job = await this.getOrCreateJob();
+    if (job.isRunning && job.pendingPosts.length > 0) {
+      return job.pendingPosts.shift();
+    }
+    return null;
+  }
+
+  // ✅ الحصول على حالة المهمة
+  async getJobStatus() {
+    const job = await this.getOrCreateJob();
+    return {
+      isRunning: job.isRunning,
+      completedCount: job.completedCount,
+      totalTarget: job.totalTarget,
+      groupUrl: job.groupUrl,
+      customHashtag: job.customHashtag,
+      pendingCount: job.pendingPosts.length,
+      visitedCount: job.visitedPosts.length
+    };
   }
 }
 
-module.exports = JobService;
-
+module.exports = new JobService();
