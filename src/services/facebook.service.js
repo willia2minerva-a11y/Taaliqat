@@ -2,12 +2,13 @@
 const puppeteer = require('puppeteer');
 
 class FacebookService {
-  /**
-   * إطلاق متصفح خفيف جداً ومُحسّن لبيئة 512MB RAM
-   */
   async _launchBrowser() {
+    // استخدام Chrome النظام إن وجد، أو تنزيله تلقائياً
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
+    
     return await puppeteer.launch({
       headless: true,
+      executablePath: executablePath,
       protocolTimeout: 60000,
       args: [
         '--no-sandbox',
@@ -17,19 +18,19 @@ class FacebookService {
         '--no-first-run',
         '--no-zygote',
         '--disable-gpu',
-        '--single-process', // تشغيل المتصفح في عملية واحدة لتوفير الذاكرة
+        '--single-process',
         '--disable-extensions',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
         '--js-flags="--max-old-space-size=128"'
       ]
     });
   }
 
-  /**
-   * إنشاء صفحة مع حظر كامل الوسائط لتوفير الذاكرة والسرعة
-   */
   async _createCleanPage(browser, rawCookies) {
     const page = await browser.newPage();
     
+    // تعطيل تحميل الصور والوسائط لتوفير الذاكرة
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const type = req.resourceType();
@@ -42,6 +43,7 @@ class FacebookService {
 
     page.setDefaultNavigationTimeout(30000);
 
+    // إعداد الكوكيز
     if (rawCookies && Array.isArray(rawCookies)) {
       const formattedCookies = rawCookies.map(cookie => {
         const { sameSite, ...rest } = cookie;
@@ -57,9 +59,6 @@ class FacebookService {
     return page;
   }
 
-  /**
-   * جلب واستخراج روابط المنشورات الجديدة وإضافتها لقائمة الانتظار
-   */
   async discoverPendingPosts(rawCookies, groupUrl, visitedPosts = []) {
     let browser = null;
     try {
@@ -85,9 +84,6 @@ class FacebookService {
     }
   }
 
-  /**
-   * قراءة نص منشور واحد وقفل التبويب فوراً
-   */
   async fetchPostText(rawCookies, postUrl) {
     let browser = null;
     try {
@@ -112,9 +108,6 @@ class FacebookService {
     }
   }
 
-  /**
-   * تنفيذ التعليق المزدوج مع التباعد الإدراكي (Cognitive Spacing)
-   */
   async submitDualComments(rawCookies, postUrl, aiComment, hashtag) {
     let browser = null;
     try {
@@ -123,10 +116,10 @@ class FacebookService {
       
       await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
+      // كتابة التعليق الأول (AI)
       const selector = 'textarea[name="comment_text"], textarea';
       await page.waitForSelector(selector, { timeout: 15000 });
 
-      // 1. نشر تعليق الذكاء الاصطناعي
       await page.type(selector, aiComment, { delay: 30 });
       const submitBtn = 'input[type="submit"][name="post"], input[type="submit"]';
       
@@ -135,10 +128,10 @@ class FacebookService {
         page.click(submitBtn)
       ]);
 
-      // 2. التباعد الإدراكي (انتظار 10 ثوانٍ)
+      // انتظار 10 ثواني بين التعليقات
       await new Promise(resolve => setTimeout(resolve, 10000));
 
-      // 3. نشر تعليق الهشتاج الثاني
+      // كتابة التعليق الثاني (الهاشتاج)
       await page.waitForSelector(selector, { timeout: 15000 });
       await page.type(selector, hashtag, { delay: 30 });
       await Promise.all([
