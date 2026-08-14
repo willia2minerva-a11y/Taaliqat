@@ -1,22 +1,21 @@
 // src/routes/webhook.routes.js
 const express = require('express');
 const router = express.Router();
-const WebhookController = require('../controllers/webhook.controller');
+const webhookController = require('../controllers/webhook.controller');
 
-// فحص أمان وقائي للتأكد من استيراد الدوال بالشكل الصحيح وعدم تمرير undefined
-if (!WebhookController || typeof WebhookController.verifyWebhook !== 'function' || typeof WebhookController.handleMessage !== 'function') {
-  console.error('❌ CRITICAL ERROR: WebhookController static methods are not properly exported!');
-}
+// ✅ التحقق من Webhook (GET)
+router.get('/', (req, res) => webhookController.verifyWebhook(req, res));
 
-/**
- * GET /webhook - مسار التحقق من الصحة مع فيسبوك (Webhook Verification)
- */
-router.get('/webhook', WebhookController.verifyWebhook);
+// ✅ استقبال الأحداث (POST)
+router.post('/', (req, res) => webhookController.handleWebhookEvent(req, res));
 
-/**
- * POST /webhook - مسار استقبال الأحداث والرسائل من ميسنجر
- */
-router.post('/webhook', WebhookController.handleMessage);
+// ✅ مسار إضافي للاختبار
+router.get('/test', (req, res) => {
+  res.status(200).json({
+    status: 'success',
+    message: 'Webhook endpoint is working!',
+    verifyToken: process.env.VERIFY_TOKEN || 'not set'
+  });
+});
 
 module.exports = router;
-
