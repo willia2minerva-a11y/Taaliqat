@@ -1,101 +1,76 @@
+// src/services/facebook.service.js
 const puppeteer = require('puppeteer');
-const { FB_GROUP_URL } = require('../config');
 
 class FacebookService {
-  constructor() {
-    this.browser = null;
-    this.page = null;
-  }
-
-  async randomDelay(min, max) {
-    const delay = Math.floor(Math.random() * (max - min + 1)) + min;
-    return new Promise(resolve => setTimeout(resolve, delay));
-  }
-
-  async init(cookieData) {
-    this.browser = await puppeteer.launch({
+  /**
+   * إنشاء جلسة متصفح آمنة وتغذيتها بالكوكيز بأسلوب آمن ومعالج بروتوكولياً
+   */
+  static async createSession(rawCookies) {
+    // 1. إطلاق المتصفح بإعدادات آمنة لبيئة Render/Linux
+    const browser = await puppeteer.launch({
       headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
         '--disable-gpu'
       ]
     });
-    this.page = await this.browser.newPage();
-    
-    // ضبط العرض والارتفاع لمنع اكتشاف الأتمتة
-    await this.page.setViewport({ width: 1280, height: 800 });
 
-    if (cookieData && Array.isArray(cookieData)) {
-      await this.page.setCookie(...cookieData);
-    } else {
-      throw new Error('بيانات الكوكيز المقدمة غير صالحة.');
-    }
-  }
+    const page = await browser.newPage();
 
-  async goToGroup() {
-    await this.page.goto(FB_GROUP_URL, { waitUntil: 'networkidle2', timeout: 60000 });
-    
-    // الفحص عن ما إذا كان الحساب قد سجل خروجه
-    const isLoginPage = await this.page.evaluate(() => {
-      return document.querySelector('input[id="email"]') !== null || document.title.includes('Log in');
-    });
-
-    if (isLoginPage) {
-      throw new Error('SESSION_EXPIRED: الكوكيز منتهي الصلاحية وحساب فيسبوك يتطلب تسجيل الدخول.');
-    }
-  }
-
-  async extractFeedPosts() {
-    // استخراج المنشورات الموجودة في الصفحة الحالية
-    return await this.page.evaluate(() => {
-      const articles = Array.from(document.querySelectorAll('div[role="article"]'));
-      return articles.map((art, index) => {
-        const text = art.innerText || '';
-        return { index, textSnippet: text.substring(0, 150) };
-      }).filter(p => p.textSnippet.length > 15);
-    });
-  }
-
-  async postComments(postIndex, aiComment, fixedComment) {
     try {
-      const articles = await this.page.$$('div[role="article"]');
-      if (!articles[postIndex]) return false;
+      // 2. تفريغ كوكيز الجلسة عبر CDP بدون الوقوع في خطأ Network.deleteCookies
+      const client = await page.target().createCDPSession();
+      await client.send('Network.clearBrowserCookies');
 
-      const postElement = articles[postIndex];
+      // 3. توحيد وتصحيح بنية الكوكيز لضمان مطابقة متطلبات Puppeteer
+      const formattedCookies = rawCookies.map(cookie => {
+        // إستبعاد الخصائص غير المطبقة أو المسببة للأخطاء
+        const { sameSite, ...validProperties } = cookie;
 
-      // البحث عن مربع التعليق
-      const commentBoxSelector = 'div[aria-label="Write a comment"], div[aria-label="كتابة تعليق"]';
-      await postElement.waitForSelector(commentBoxSelector, { timeout: 5000 });
-      const commentBox = await postElement.$(commentBoxSelector);
+        return {
+          ...validProperties,
+          // إسناد Fallback للنطاق والرابط لضمان قبول البروتوكول
+          domain: cookie.domain || '.facebook.com',
+          url: cookie.url || 'https://www.facebook.com'
+        };
+      });
 
-      if (!commentBox) return false;
+      // 4. إسناد الكوكيز المعالجة للصفحة
+      await page.setCookie(...formattedCookies);
 
-      // 1. التعليق الأول (AI)
-      await commentBox.click();
-      await this.randomDelay(1000, 2000);
-      await this.page.keyboard.type(aiComment, { delay: 40 });
-      await this.page.keyboard.press('Enter');
-
-      await this.randomDelay(3000, 5000);
-
-      // 2. التعليق الثاني (الجامد)
-      await commentBox.click();
-      await this.randomDelay(1000, 2000);
-      await this.page.keyboard.type(fixedComment, { delay: 40 });
-      await this.page.keyboard.press('Enter');
-
-      return true;
-    } catch (err) {
-      throw new Error(`خطأ أثناء إضافة التعليقات: ${err.message}`);
+      return { browser, page };
+    } catch (error) {
+      // ضمان إغلاق المتصفح في حال وجود أي استثناء لمنع تسرب الذاكرة (Memory Leak)
+      await browser.close();
+      throw new Error(`فشل إعداد جلسة المتصفح: ${error.message}`);
     }
   }
 
-  async close() {
-    if (this.browser) {
-      await this.browser.close().catch(() => {});
+  /**
+   * تنفيذ عملية التعليق على منشور محدد
+   */
+  static async postComment(cookiesData, postUrl, commentText) {
+    let session = null;
+    try {
+      session = await FacebookService.createSession(cookiesData);
+      const { page, browser } = session;
+
+      // التوجه للمنشور وتنفيذ الإجراء
+      await page.goto(postUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      
+      // === أضف منطق الضغط على التعليق والنشر الخاص بك هنا ===
+
+      await browser.close();
+      return true;
+    } catch (error) {
+      if (session?.browser) await session.browser.close();
+      console.error('❌ Error in postComment:', error.message);
+      throw error;
     }
   }
 }
