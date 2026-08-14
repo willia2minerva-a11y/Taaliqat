@@ -2,6 +2,7 @@
 const JobState = require('./models/JobState');
 const Cookie = require('./models/Cookie');
 const facebookService = require('./services/facebook.service');
+const geminiService = require('./services/gemini.service');
 const MessengerService = require('./services/messenger.service');
 const { ADMIN_FB_ID } = require('./config');
 
@@ -21,6 +22,7 @@ async function startWorkerLoop() {
       return;
     }
 
+    // جلب أول حساب نشط
     const activeCookie = await Cookie.findOne({ status: 'ACTIVE' });
     if (!activeCookie) {
       job.isRunning = false;
@@ -31,34 +33,57 @@ async function startWorkerLoop() {
       return;
     }
 
-    // رابط الهدف (يمكن تخصيصه من المهمة أو تعيين رابط منشور مباشر)
-    const targetUrl = 'https://mbasic.facebook.com';
-
     try {
-      // تنفيذ عملية التعليق الفعلية
-      const result = await facebookService.postComment(activeCookie.data, targetUrl, job.fixedComment);
+      // 1. جلب منشور جديد غير معلق عليه
+      const postData = await facebookService.fetchNextPost(
+        activeCookie.data,
+        job.groupUrl || 'https://mbasic.facebook.com',
+        job.visitedPosts
+      );
 
-      if (result && result.success) {
-        // تحديث العدادات والتأكد من تسجيل القيم بدون undefined
-        job.processedPosts += 1;
-        job.logs.push({
-          cookieName: activeCookie.name || 'حساب غير معروف',
-          postUrl: result.actualUrl || targetUrl,
-          commentText: job.fixedComment || 'لا يوجد نص',
-          status: 'SUCCESS'
-        });
+      // 2. توليد تعليق الـ AI (أو الخطة B)
+      const aiResult = await geminiService.generateComment(postData.postText);
 
-        if (job.logs.length > 50) job.logs.shift();
-        await job.save();
+      // 3. كتابة التعليق الأول (AI / الخطة B)
+      await facebookService.submitComment(aiResult.comment);
 
-        activeCookie.successCount += 1;
-        await activeCookie.save();
+      // 4. كتابة التعليق الثاني (التعليق الثابت / الهشتاج)
+      await facebookService.submitComment(job.fixedComment);
 
-        console.log(`📈 تم التعليق بنجاح بواسطة [${activeCookie.name}] على الرابط: ${result.actualUrl}`);
+      // 5. إغلاق الجلسة وتحديث البيانات
+      await facebookService.close();
+
+      job.processedPosts += 1;
+      job.visitedPosts.push(postData.cleanUrl);
+      
+      const logEntry = {
+        cookieName: activeCookie.name,
+        postUrl: postData.cleanUrl,
+        commentText: aiResult.comment,
+        fixedCommentText: job.fixedComment,
+        status: 'SUCCESS',
+        isAi: aiResult.isAi
+      };
+
+      job.logs.push(logEntry);
+      if (job.logs.length > 50) job.logs.shift();
+      await job.save();
+
+      activeCookie.successCount += 1;
+      await activeCookie.save();
+
+      // تنبيه الإدارة في حال استخدام الخطة B
+      if (!aiResult.isAi && ADMIN_FB_ID) {
+        const warningMsg = `⚠️ **تنبيه الخطة B:**\n\n` +
+          `• المنشور: ${postData.cleanUrl}\n` +
+          `• السبب: ${aiResult.reason}\n` +
+          `• التعليق المكتوب: ${aiResult.comment}`;
+        await MessengerService.sendMessage(ADMIN_FB_ID, warningMsg);
       }
 
     } catch (err) {
       console.error(`⚠️ خطأ في الحساب [${activeCookie.name}]: ${err.message}`);
+      await facebookService.close();
 
       const isCriticalError = err.message.includes('login') || 
                               err.message.includes('checkpoint') || 
@@ -72,25 +97,23 @@ async function startWorkerLoop() {
         if (ADMIN_FB_ID) {
           const alertMsg = `⚠️ **تنبيه عطل حساب!**\n\n` +
             `• الحساب: [${activeCookie.name}]\n` +
-            `• الحالة: توقف / منتهي 🔴\n` +
-            `• السبب: ${err.message}\n\n` +
-            `💡 يمكنك حذفه عبر الأمر: /حذف ${activeCookie.name}`;
+            `• السبب الدقيق: ${err.message}\n` +
+            `💡 سيتم الانتقال للحساب النشط التالي آلياً.`;
           
           await MessengerService.sendMessage(ADMIN_FB_ID, alertMsg);
         }
       }
 
-      // تسجيل الفشل مع القيم الاحتياطية لتفادي undefined
       job.logs.push({
-        cookieName: activeCookie.name || 'حساب غير معروف',
-        postUrl: targetUrl,
-        commentText: job.fixedComment || 'لا يوجد نص',
+        cookieName: activeCookie.name,
+        postUrl: 'غير معروف',
+        commentText: 'فشل العملية',
         status: 'FAILED',
         errorDetails: err.message
       });
       await job.save();
     }
-  }, 15000);
+  }, (job?.delaySeconds || 5) * 1000);
 }
 
 module.exports = { startWorkerLoop };
