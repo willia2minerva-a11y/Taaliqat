@@ -4,34 +4,61 @@ const puppeteer = require('puppeteer');
 class FacebookService {
   constructor() {
     this.browser = null;
-    this.page = null;
   }
 
   /**
-   * تهيئة المتصفح والجلسة (يتوافق مع استدعاء fbService.init)
+   * جلب أو إنشاء جلسة متصفح عامة (Singleton Pattern) لتوفير الذاكرة والـ CPU
    */
-  async init(rawCookies) {
+  async getBrowser() {
+    if (this.browser && this.browser.isConnected()) {
+      return this.browser;
+    }
+
+    this.browser = await puppeteer.launch({
+      headless: true,
+      protocolTimeout: 120000, // زيادة مهلة البروتوكول إلى دقيقتين
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu',
+        '--single-process' // لتقليل استهلاك الذاكرة على Render
+      ]
+    });
+
+    return this.browser;
+  }
+
+  /**
+   * تنفيذ كتابة التعليق بآلية فائقة السرعة مع منع الميديا والـ Timeouts
+   */
+  async postComment(rawCookies, postUrl, commentText) {
+    let page = null;
     try {
-      this.browser = await puppeteer.launch({
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--no-first-run',
-          '--no-zygote',
-          '--disable-gpu'
-        ]
+      const browser = await this.getBrowser();
+      page = await browser.newPage();
+
+      // 1. تسريع التحميل الخرافي: حظر الصور، الصوت، والأنيميشن
+      await page.setRequestInterception(true);
+      page.on('request', (req) => {
+        const resourceType = req.resourceType();
+        if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
+          req.abort();
+        } else {
+          req.continue();
+        }
       });
 
-      this.page = await this.browser.newPage();
+      // 2. تعيين المهلة المخصصة للصفحة
+      page.setDefaultNavigationTimeout(45000);
 
-      // مسح الكوكيز القديمة عبر جلسة CDP لتجنب خطأ Protocol
-      const client = await this.page.target().createCDPSession();
+      // 3. مسح وتجهيز الكوكيز
+      const client = await page.target().createCDPSession();
       await client.send('Network.clearBrowserCookies');
 
-      // معالجة وتنسيق الكوكيز
       if (rawCookies && Array.isArray(rawCookies)) {
         const formattedCookies = rawCookies.map(cookie => {
           const { sameSite, ...rest } = cookie;
@@ -41,47 +68,34 @@ class FacebookService {
             url: cookie.url || 'https://www.facebook.com'
           };
         });
-        await this.page.setCookie(...formattedCookies);
+        await page.setCookie(...formattedCookies);
       }
+
+      // 4. التوجه للمنشور بصيغة domcontentloaded لتجنب انتظار الصور والإعلانات
+      await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+
+      // === أضف منطق الضغط والتعليق المباشر هنا ===
+      // await page.type('textarea', commentText);
 
       return true;
     } catch (error) {
-      if (this.browser) await this.browser.close();
-      throw new Error(`فشل تهيئة جلسة فيسبوك: ${error.message}`);
+      throw error;
+    } finally {
+      // إغلاق التبويب فقط وإبقاء المتصفح يعمل للمهمة القادمة
+      if (page) await page.close();
     }
   }
 
   /**
-   * إغلاق الجلسة والمتصفح بأمان (يتوافق مع fbService.close)
+   * إغلاق المتصفح عند إيقاف السيرفر
    */
-  async close() {
+  async closeBrowser() {
     if (this.browser) {
       await this.browser.close();
       this.browser = null;
-      this.page = null;
-    }
-  }
-
-  /**
-   * تنفيذ كتابة التعليق على المنشور
-   */
-  async postComment(postUrl, commentText) {
-    if (!this.page) {
-      throw new Error('الجلسة غير مهيأة. يجب استدعاء init أولاً.');
-    }
-
-    try {
-      await this.page.goto(postUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-      
-      // === أضف محددات السلكتور الخاصة بالضغط على التعليق هنا ===
-      // await this.page.type('textarea', commentText);
-      // await this.page.click('button[type="submit"]');
-
-      return true;
-    } catch (error) {
-      throw new Error(`فشل نشر التعليق: ${error.message}`);
     }
   }
 }
 
-module.exports = FacebookService;
+// تصدير Singleton Instance
+module.exports = new FacebookService();
