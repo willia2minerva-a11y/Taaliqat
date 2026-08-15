@@ -1,9 +1,6 @@
 FROM node:18-slim
 
-# تثبيت تبعيات Chrome
 RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
     ca-certificates \
     fonts-liberation \
     libasound2 \
@@ -20,17 +17,18 @@ RUN apt-get update && apt-get install -y \
     libxdamage1 \
     libxrandr2 \
     xdg-utils \
-    && apt-get clean
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY package*.json ./
+
+ENV PUPPETEER_SKIP_DOWNLOAD=false
+
 RUN npm install
 
 COPY . .
 
-# ✅ إزالة متغيرات Chrome المؤقتة
-# لا نضبط PUPPETEER_SKIP_CHROMIUM_DOWNLOAD لأننا نريد تنزيل Chrome
-
 EXPOSE 10000
-CMD ["node", "src/server.js"]
+
+CMD ["node", "--expose-gc", "--max-old-space-size=250", "src/server.js"]
