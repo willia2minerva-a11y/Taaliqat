@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 
+// ✅ Schema للصفحات التابعة للحساب
 const pageSchema = new mongoose.Schema({
   pageId: {
     type: String,
@@ -36,6 +37,7 @@ const pageSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// ✅ Schema الرئيسي للحسابات
 const cookieSchema = new mongoose.Schema({
   accountName: {
     type: String,
@@ -61,12 +63,12 @@ const cookieSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
-  // ✅ إضافة حقل الصفحات
+  // ✅ الصفحات التابعة للحساب
   pages: {
     type: [pageSchema],
     default: []
   },
-  // عدد التعليقات التي تمت عبر الحساب الشخصي
+  // عدد التعليقات عبر الحساب الشخصي
   personalCommentsCount: {
     type: Number,
     default: 0
