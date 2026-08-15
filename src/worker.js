@@ -12,14 +12,15 @@ const facebookService =
 const geminiService =
   require('./services/gemini.service');
 
+
 class AtomicWorker {
+
   constructor() {
+
     this.isProcessing = false;
 
     // كل 45 ثانية
     this.interval = 45000;
-
-    this.timer = null;
   }
 
   // =========================================================
@@ -27,22 +28,21 @@ class AtomicWorker {
   // =========================================================
 
   start() {
+
     console.log(
       '🚀 Atomic Worker Started...'
     );
 
-    // أول دورة مباشرة
+    // أول تشغيل مباشرة
     this.processNextTask();
 
-    // منع إنشاء أكثر من interval
-    if (!this.timer) {
-      this.timer =
-        setInterval(
-          () =>
-            this.processNextTask(),
-          this.interval
-        );
-    }
+    // بعد ذلك كل 45 ثانية
+    setInterval(
+      () => {
+        this.processNextTask();
+      },
+      this.interval
+    );
   }
 
   // =========================================================
@@ -53,19 +53,24 @@ class AtomicWorker {
     postUrl,
     hashtag
   ) {
+
     const cleanPost =
-      String(postUrl || '')
-        .trim();
+      String(
+        postUrl || ''
+      ).trim();
 
     const cleanHashtag =
-      String(hashtag || '')
-        .trim();
+      String(
+        hashtag || ''
+      ).trim();
 
-    return `${cleanPost}|||${cleanHashtag}`;
+    return (
+      `${cleanPost}|||${cleanHashtag}`
+    );
   }
 
   // =========================================================
-  // WAS PROCESSED
+  // CHECK PROCESSED
   // =========================================================
 
   _wasProcessed(
@@ -73,6 +78,7 @@ class AtomicWorker {
     postUrl,
     hashtag
   ) {
+
     if (
       !Array.isArray(
         job.visitedPosts
@@ -101,6 +107,7 @@ class AtomicWorker {
     postUrl,
     hashtag
   ) {
+
     if (
       !Array.isArray(
         job.visitedPosts
@@ -116,17 +123,21 @@ class AtomicWorker {
       );
 
     if (
-      !job.visitedPosts.includes(key)
+      !job.visitedPosts.includes(
+        key
+      )
     ) {
+
       job.visitedPosts.push(
         key
       );
     }
 
+    // لا تسمح بتضخم MongoDB
     if (
-      job.visitedPosts.length >
-      5000
+      job.visitedPosts.length > 5000
     ) {
+
       job.visitedPosts =
         job.visitedPosts.slice(
           -5000
@@ -144,6 +155,15 @@ class AtomicWorker {
     job,
     cookieAccount
   ) {
+
+    const accountName =
+      cookieAccount?.accountName ||
+      'UNKNOWN';
+
+    console.log(
+      `🔎 Discovering posts using account: "${accountName}"`
+    );
+
     const allPosts =
       await facebookService
         .discoverPendingPosts(
@@ -155,6 +175,11 @@ class AtomicWorker {
       !Array.isArray(allPosts) ||
       allPosts.length === 0
     ) {
+
+      console.log(
+        '📭 No posts discovered'
+      );
+
       return [];
     }
 
@@ -176,10 +201,295 @@ class AtomicWorker {
     );
 
     console.log(
-      `♻️ Available for hashtag "${hashtag}": ${available.length}`
+      `♻️ Available for "${hashtag}": ${available.length}`
     );
 
     return available;
+  }
+
+  // =========================================================
+  // FACEBOOK ERROR CLASSIFICATION
+  // =========================================================
+
+  _classifyFacebookError(
+    error
+  ) {
+
+    const message =
+      String(
+        error?.message || error || ''
+      ).toLowerCase();
+
+    // -------------------------------------------------------
+    // Cookie expired / authentication
+    // -------------------------------------------------------
+
+    if (
+      message.includes(
+        'authentication_error'
+      ) ||
+      message.includes(
+        'cookies may be invalid'
+      ) ||
+      message.includes(
+        'requires login'
+      ) ||
+      message.includes(
+        'login page'
+      ) ||
+      message.includes(
+        'checkpoint'
+      ) ||
+      message.includes(
+        'security verification'
+      ) ||
+      message.includes(
+        'cookie'
+      )
+    ) {
+
+      return 'EXPIRED';
+    }
+
+    // -------------------------------------------------------
+    // Account / Facebook blocked
+    // -------------------------------------------------------
+
+    if (
+      message.includes(
+        'blocked'
+      ) ||
+      message.includes(
+        'temporarily'
+      ) ||
+      message.includes(
+        'rate limit'
+      ) ||
+      message.includes(
+        'too many'
+      )
+    ) {
+
+      return 'BLOCKED';
+    }
+
+    // -------------------------------------------------------
+    // Navigation / browser problem
+    //
+    // Don't immediately destroy account because
+    // Chromium may simply have failed.
+    // -------------------------------------------------------
+
+    return 'UNKNOWN';
+  }
+
+  // =========================================================
+  // TRY DISCOVERY WITH MULTIPLE ACCOUNTS
+  // =========================================================
+
+  async _discoverWithAccounts(
+    job
+  ) {
+
+    console.log(
+      '🍪 Checking Facebook cookie accounts...'
+    );
+
+    // -------------------------------------------------------
+    // IMPORTANT:
+    //
+    // This method gets ACTIVE accounts one by one.
+    // If one fails, we continue to the next.
+    // -------------------------------------------------------
+
+    const accounts =
+      await cookieManager.getAllCookies();
+
+    const activeAccounts =
+      accounts.filter(
+        account =>
+          account.status === 'ACTIVE'
+      );
+
+    console.log(
+      `[WORKER] 👥 ACTIVE accounts available: ${activeAccounts.length}`
+    );
+
+    if (
+      activeAccounts.length === 0
+    ) {
+
+      console.warn(
+        '[WORKER] ⚠️ No ACTIVE Facebook accounts'
+      );
+
+      return {
+        posts: [],
+        account: null
+      };
+    }
+
+    for (
+      const account
+      of activeAccounts
+    ) {
+
+      const accountName =
+        account.accountName ||
+        'UNKNOWN';
+
+      // -----------------------------------------------------
+      // Validate structure before Facebook
+      // -----------------------------------------------------
+
+      const validation =
+        cookieManager
+          .validateCookiesDetailed(
+            account.cookies
+          );
+
+      if (
+        !validation.valid
+      ) {
+
+        console.warn(
+          `[WORKER][COOKIE] ⚠️ Skipping "${accountName}" because cookies are invalid: ${validation.reason}`
+        );
+
+        // ---------------------------------------------------
+        // Incomplete cookie set
+        // ---------------------------------------------------
+
+        if (
+          validation.reason ===
+          'COOKIES_MISSING_REQUIRED'
+        ) {
+
+          await cookieManager.markExpired(
+            account._id,
+            `Missing required cookies: ${
+              validation.missing.join(', ')
+            }`
+          );
+
+        } else {
+
+          await cookieManager.markExpired(
+            account._id,
+            validation.reason
+          );
+        }
+
+        continue;
+      }
+
+      // -----------------------------------------------------
+      // VALID COOKIE STRUCTURE
+      // -----------------------------------------------------
+
+      console.log(
+        `\n[WORKER] 🟢 Trying Facebook account: "${accountName}"`
+      );
+
+      try {
+
+        const posts =
+          await this._getAvailablePosts(
+            job,
+            account
+          );
+
+        // ---------------------------------------------------
+        // Account works, even if no posts.
+        // ---------------------------------------------------
+
+        await cookieManager
+          .updateCookieUsage(
+            account._id
+          );
+
+        return {
+          posts,
+          account
+        };
+
+      } catch (error) {
+
+        const type =
+          this._classifyFacebookError(
+            error
+          );
+
+        console.error(
+          `[WORKER][FACEBOOK] ❌ Account "${accountName}" failed`
+        );
+
+        console.error(
+          `[WORKER][FACEBOOK] Error: ${error.message}`
+        );
+
+        console.error(
+          `[WORKER][FACEBOOK] Classification: ${type}`
+        );
+
+        // ---------------------------------------------------
+        // Expired / invalid session
+        // ---------------------------------------------------
+
+        if (
+          type === 'EXPIRED'
+        ) {
+
+          await cookieManager.markExpired(
+            account._id,
+            error.message
+          );
+        }
+
+        // ---------------------------------------------------
+        // Blocked
+        // ---------------------------------------------------
+
+        else if (
+          type === 'BLOCKED'
+        ) {
+
+          await cookieManager.markBlocked(
+            account._id,
+            error.message
+          );
+        }
+
+        // ---------------------------------------------------
+        // UNKNOWN
+        //
+        // Don't destroy account.
+        // Just continue to next one.
+        // ---------------------------------------------------
+
+        else {
+
+          console.warn(
+            `[WORKER][WARN] ⚠️ Unknown Facebook error for "${accountName}". Account will NOT be deleted.`
+          );
+        }
+
+        console.log(
+          `[WORKER] 🔄 Moving to next Facebook account...`
+        );
+
+        continue;
+      }
+    }
+
+    console.error(
+      '[WORKER] ❌ All Facebook accounts failed or were invalid'
+    );
+
+    return {
+      posts: [],
+      account: null
+    };
   }
 
   // =========================================================
@@ -187,7 +497,11 @@ class AtomicWorker {
   // =========================================================
 
   async processNextTask() {
-    if (this.isProcessing) {
+
+    if (
+      this.isProcessing
+    ) {
+
       console.log(
         '⏳ Previous task still processing...'
       );
@@ -195,20 +509,14 @@ class AtomicWorker {
       return;
     }
 
-    this.isProcessing = true;
+    this.isProcessing =
+      true;
 
     try {
-      console.log(
-        '\n==============================================='
-      );
 
-      console.log(
-        '⚙️ ATOMIC WORKER TASK'
-      );
-
-      // -----------------------------------------------------
-      // 1. Get job
-      // -----------------------------------------------------
+      // =====================================================
+      // 1. JOB
+      // =====================================================
 
       const job =
         await JobState.findOne({
@@ -219,12 +527,17 @@ class AtomicWorker {
         !job ||
         !job.isRunning
       ) {
-        console.log(
-          'ℹ️ No running job.'
-        );
 
         return;
       }
+
+      console.log(
+        '\n==============================================='
+      );
+
+      console.log(
+        '⚙️ ATOMIC WORKER TASK'
+      );
 
       console.log(
         `📌 Progress: ${job.completedCount}/${job.totalTarget}`
@@ -242,19 +555,17 @@ class AtomicWorker {
         '==============================================='
       );
 
-      // -----------------------------------------------------
-      // 2. Target completed
-      // -----------------------------------------------------
+      // =====================================================
+      // 2. TARGET COMPLETE
+      // =====================================================
 
       if (
-        Number(
-          job.completedCount || 0
-        ) >=
-        Number(
-          job.totalTarget || 0
-        )
+        job.completedCount >=
+        job.totalTarget
       ) {
-        job.isRunning = false;
+
+        job.isRunning =
+          false;
 
         job.pendingPosts = [];
 
@@ -267,58 +578,15 @@ class AtomicWorker {
         return;
       }
 
-      // -----------------------------------------------------
-      // 3. Get VALID Facebook account
-      // -----------------------------------------------------
-
-      console.log(
-        '🍪 Checking Facebook cookie accounts...'
-      );
-
-      const cookieAccount =
-        await cookieManager
-          .getValidActiveAccount();
-
-      // -----------------------------------------------------
-      // No valid account
-      // -----------------------------------------------------
-
-      if (!cookieAccount) {
-        console.error(
-          '❌ لا يوجد حساب Facebook ACTIVE يحتوي على كوكيز صالحة.'
-        );
-
-        console.error(
-          '❌ المهمة متوقفة حتى يتم إضافة Cookie Set صحيح.'
-        );
-
-        return;
-      }
-
-      const activeCookieDoc =
-        cookieAccount.document;
-
-      console.log(
-        `👤 Using Facebook account: "${cookieAccount.accountName}"`
-      );
-
-      console.log(
-        `🍪 Cookie count: ${cookieAccount.cookies.length}`
-      );
-
-      console.log(
-        `🍪 Cookies: ${cookieAccount.validation.cookieNames.join(', ')}`
-      );
-
-      // -----------------------------------------------------
-      // 4. Find target post
-      // -----------------------------------------------------
+      // =====================================================
+      // 3. FIND TARGET POST
+      // =====================================================
 
       let targetPostUrl =
         null;
 
       // -----------------------------------------------------
-      // Existing pending posts
+      // First use pending queue
       // -----------------------------------------------------
 
       if (
@@ -327,9 +595,11 @@ class AtomicWorker {
         ) &&
         job.pendingPosts.length > 0
       ) {
+
         while (
           job.pendingPosts.length > 0
         ) {
+
           const candidate =
             job.pendingPosts.shift();
 
@@ -340,6 +610,7 @@ class AtomicWorker {
               job.customHashtag
             )
           ) {
+
             targetPostUrl =
               candidate;
 
@@ -350,26 +621,49 @@ class AtomicWorker {
         await job.save();
       }
 
-      // -----------------------------------------------------
-      // Discover new posts
-      // -----------------------------------------------------
+      // =====================================================
+      // 4. DISCOVER POSTS
+      // =====================================================
 
-      if (!targetPostUrl) {
-        console.log(
-          '🔎 Searching group posts...'
-        );
+      let selectedAccount =
+        null;
+
+      if (
+        !targetPostUrl
+      ) {
+
+        const result =
+          await this._discoverWithAccounts(
+            job
+          );
+
+        selectedAccount =
+          result.account;
 
         const availablePosts =
-          await this._getAvailablePosts(
-            job,
-            activeCookieDoc
+          result.posts;
+
+        if (
+          !selectedAccount
+        ) {
+
+          console.warn(
+            '[WORKER] ⚠️ No Facebook account can currently perform this task.'
           );
+
+          console.warn(
+            '[WORKER] 🔄 Worker will retry automatically on next cycle.'
+          );
+
+          return;
+        }
 
         if (
           availablePosts.length === 0
         ) {
+
           console.log(
-            '⌛ لا توجد منشورات متاحة لهذا الهاشتاغ حالياً.'
+            '⌛ No new posts available currently.'
           );
 
           return;
@@ -384,9 +678,16 @@ class AtomicWorker {
         await job.save();
       }
 
-      if (!targetPostUrl) {
+      // =====================================================
+      // 5. IF WE GOT A QUEUED POST
+      // =====================================================
+
+      if (
+        !targetPostUrl
+      ) {
+
         console.log(
-          '⌛ لم يتم اختيار منشور.'
+          '⌛ No target post selected.'
         );
 
         return;
@@ -397,27 +698,100 @@ class AtomicWorker {
       );
 
       console.log(
-        `🏷️ Current hashtag: ${job.customHashtag}`
+        `🏷️ Hashtag: ${job.customHashtag}`
       );
 
-      // -----------------------------------------------------
-      // 5. Read post
-      // -----------------------------------------------------
+      // =====================================================
+      // 6. GET A VALID ACCOUNT FOR POST
+      // =====================================================
+
+      if (
+        !selectedAccount
+      ) {
+
+        selectedAccount =
+          await cookieManager
+            .getValidActiveAccount();
+      }
+
+      if (
+        !selectedAccount
+      ) {
+
+        console.warn(
+          '[WORKER] ⚠️ No valid Facebook account available for post processing.'
+        );
+
+        return;
+      }
 
       console.log(
-        '📖 Reading Facebook post...'
+        `👤 Using Facebook account: "${selectedAccount.accountName}"`
       );
 
-      const postText =
-        await facebookService
-          .fetchPostText(
-            cookieAccount.cookies,
-            targetPostUrl
+      // =====================================================
+      // 7. FETCH POST TEXT
+      // =====================================================
+
+      let postText;
+
+      try {
+
+        postText =
+          await facebookService
+            .fetchPostText(
+              selectedAccount.cookies,
+              targetPostUrl
+            );
+
+      } catch (error) {
+
+        const type =
+          this._classifyFacebookError(
+            error
           );
 
-      if (!postText) {
+        console.error(
+          `[WORKER][FETCH] ❌ Account "${selectedAccount.accountName}" failed: ${error.message}`
+        );
+
+        console.error(
+          `[WORKER][FETCH] Classification: ${type}`
+        );
+
+        if (
+          type === 'EXPIRED'
+        ) {
+
+          await cookieManager.markExpired(
+            selectedAccount._id,
+            error.message
+          );
+
+        } else if (
+          type === 'BLOCKED'
+        ) {
+
+          await cookieManager.markBlocked(
+            selectedAccount._id,
+            error.message
+          );
+        }
+
+        // ---------------------------------------------------
+        // Don't mark post as processed.
+        // Next cycle will retry.
+        // ---------------------------------------------------
+
+        return;
+      }
+
+      if (
+        !postText
+      ) {
+
         throw new Error(
-          'POST_TEXT_ERROR: لم يتم العثور على نص المنشور'
+          'POST_TEXT_ERROR: Empty post text'
         );
       }
 
@@ -425,13 +799,9 @@ class AtomicWorker {
         `📖 Post text length: ${postText.length}`
       );
 
-      // -----------------------------------------------------
-      // 6. Gemini
-      // -----------------------------------------------------
-
-      console.log(
-        '🤖 Generating AI comment...'
-      );
+      // =====================================================
+      // 8. GEMINI
+      // =====================================================
 
       const aiComment =
         await geminiService
@@ -442,36 +812,75 @@ class AtomicWorker {
 
       if (
         !aiComment ||
-        !String(aiComment).trim()
+        !String(
+          aiComment
+        ).trim()
       ) {
+
         throw new Error(
-          'GEMINI_ERROR: Gemini لم يُرجع تعليقاً صالحاً'
+          'GEMINI_ERROR: Gemini returned empty comment'
         );
       }
 
-      console.log(
-        `🤖 AI comment generated: ${String(aiComment).length} chars`
-      );
+      // =====================================================
+      // 9. SUBMIT COMMENTS
+      // =====================================================
 
-      // -----------------------------------------------------
-      // 7. Submit comments
-      // -----------------------------------------------------
+      try {
 
-      console.log(
-        '💬 Submitting Facebook comments...'
-      );
+        await facebookService
+          .submitDualComments(
+            selectedAccount.cookies,
+            targetPostUrl,
+            aiComment,
+            job.customHashtag
+          );
 
-      await facebookService
-        .submitDualComments(
-          cookieAccount.cookies,
-          targetPostUrl,
-          aiComment,
-          job.customHashtag
+      } catch (error) {
+
+        const type =
+          this._classifyFacebookError(
+            error
+          );
+
+        console.error(
+          `[WORKER][COMMENT] ❌ Account "${selectedAccount.accountName}" failed`
         );
 
-      // -----------------------------------------------------
-      // 8. Mark processed
-      // -----------------------------------------------------
+        console.error(
+          `[WORKER][COMMENT] Error: ${error.message}`
+        );
+
+        console.error(
+          `[WORKER][COMMENT] Classification: ${type}`
+        );
+
+        if (
+          type === 'EXPIRED'
+        ) {
+
+          await cookieManager.markExpired(
+            selectedAccount._id,
+            error.message
+          );
+
+        } else if (
+          type === 'BLOCKED'
+        ) {
+
+          await cookieManager.markBlocked(
+            selectedAccount._id,
+            error.message
+          );
+        }
+
+        // لا نحسب المنشور كمكتمل
+        return;
+      }
+
+      // =====================================================
+      // 10. MARK PROCESSED
+      // =====================================================
 
       await this._markAsProcessed(
         job,
@@ -479,9 +888,9 @@ class AtomicWorker {
         job.customHashtag
       );
 
-      // -----------------------------------------------------
-      // 9. Progress
-      // -----------------------------------------------------
+      // =====================================================
+      // 11. UPDATE PROGRESS
+      // =====================================================
 
       job.completedCount =
         Number(
@@ -490,21 +899,16 @@ class AtomicWorker {
 
       await job.save();
 
-      // -----------------------------------------------------
-      // Update cookie usage
-      // -----------------------------------------------------
-
-      await cookieManager
-        .updateCookieUsage(
-          activeCookieDoc._id
-        );
+      // =====================================================
+      // SUCCESS
+      // =====================================================
 
       console.log(
         `🎉 [${job.completedCount}/${job.totalTarget}] تم التعليق بنجاح`
       );
 
       console.log(
-        `👤 Account: ${cookieAccount.accountName}`
+        `👤 Account: ${selectedAccount.accountName}`
       );
 
       console.log(
@@ -515,42 +919,31 @@ class AtomicWorker {
         `🏷️ Hashtag: ${job.customHashtag}`
       );
 
+      console.log(
+        '==============================================='
+      );
+
     } catch (error) {
+
       console.error(
-        '\n==============================================='
+        `⚠️ خطأ أثناء تنفيذ المهمة الذرية: ${
+          error?.message || error
+        }`
       );
 
       console.error(
-        '⚠️ ATOMIC WORKER ERROR'
-      );
-
-      console.error(
-        `TYPE: ${error?.name || 'Unknown'}`
-      );
-
-      console.error(
-        `MESSAGE: ${error?.message || error}`
-      );
-
-      if (error?.stack) {
-        console.error(
-          'STACK:'
-        );
-
-        console.error(
-          error.stack
-        );
-      }
-
-      console.error(
-        '===============================================\n'
+        error?.stack || ''
       );
 
     } finally {
+
       this.isProcessing =
         false;
 
-      if (global.gc) {
+      if (
+        global.gc
+      ) {
+
         try {
           global.gc();
         } catch {}
