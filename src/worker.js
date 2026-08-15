@@ -1,16 +1,21 @@
 // src/worker.js
 
-const JobState = require('./models/JobState');
-const Cookie = require('./models/Cookie');
+const JobState =
+  require('./models/JobState');
 
 const facebookService =
   require('./services/facebook.service');
+
+const cookieManager =
+  require('./services/cookieManager.service');
 
 const geminiService =
   require('./services/gemini.service');
 
 class AtomicWorker {
+
   constructor() {
+
     this.isProcessing = false;
 
     // كل 45 ثانية
@@ -18,46 +23,48 @@ class AtomicWorker {
   }
 
   // =========================================================
-  // Start
+  // START
   // =========================================================
 
   start() {
+
     console.log(
       '🚀 Atomic Worker Started...'
     );
 
-    // تشغيل أول دورة مباشرة
     this.processNextTask();
 
-    // ثم كل 45 ثانية
     setInterval(
-      () => this.processNextTask(),
+      () =>
+        this.processNextTask(),
       this.interval
     );
   }
 
   // =========================================================
-  // Create unique processing key
+  // PROCESSING KEY
   // =========================================================
 
   _makeProcessingKey(
     postUrl,
     hashtag
   ) {
+
     const cleanPost =
-      String(postUrl || '')
-        .trim();
+      String(
+        postUrl || ''
+      ).trim();
 
     const cleanHashtag =
-      String(hashtag || '')
-        .trim();
+      String(
+        hashtag || ''
+      ).trim();
 
     return `${cleanPost}|||${cleanHashtag}`;
   }
 
   // =========================================================
-  // Check if post already processed
-  // with THIS hashtag
+  // CHECK PROCESSED
   // =========================================================
 
   _wasProcessed(
@@ -65,11 +72,13 @@ class AtomicWorker {
     postUrl,
     hashtag
   ) {
+
     if (
       !Array.isArray(
         job.visitedPosts
       )
     ) {
+
       return false;
     }
 
@@ -85,7 +94,7 @@ class AtomicWorker {
   }
 
   // =========================================================
-  // Save processed post + hashtag
+  // MARK PROCESSED
   // =========================================================
 
   async _markAsProcessed(
@@ -93,11 +102,13 @@ class AtomicWorker {
     postUrl,
     hashtag
   ) {
+
     if (
       !Array.isArray(
         job.visitedPosts
       )
     ) {
+
       job.visitedPosts = [];
     }
 
@@ -108,19 +119,21 @@ class AtomicWorker {
       );
 
     if (
-      !job.visitedPosts.includes(key)
+      !job.visitedPosts.includes(
+        key
+      )
     ) {
+
       job.visitedPosts.push(
         key
       );
     }
 
-    // منع تضخم الوثيقة بشكل مبالغ
-    // نحتفظ بآخر 5000 معالجة
     if (
       job.visitedPosts.length >
       5000
     ) {
+
       job.visitedPosts =
         job.visitedPosts.slice(
           -5000
@@ -131,13 +144,41 @@ class AtomicWorker {
   }
 
   // =========================================================
-  // Get candidate posts
+  // GET AVAILABLE POSTS
   // =========================================================
 
   async _getAvailablePosts(
     job,
     cookieDoc
   ) {
+
+    if (!cookieDoc) {
+
+      throw new Error(
+        'COOKIE_ERROR: No valid cookie account was selected.'
+      );
+    }
+
+    if (
+      !Array.isArray(
+        cookieDoc.cookies
+      ) ||
+      cookieDoc.cookies.length === 0
+    ) {
+
+      throw new Error(
+        `COOKIE_ERROR: Selected account "${cookieDoc.accountName}" has empty cookies.`
+      );
+    }
+
+    console.log(
+      `👤 Using Facebook account: ${cookieDoc.accountName}`
+    );
+
+    console.log(
+      `🍪 Cookie count: ${cookieDoc.cookies.length}`
+    );
+
     const allPosts =
       await facebookService
         .discoverPendingPosts(
@@ -146,23 +187,17 @@ class AtomicWorker {
         );
 
     if (
-      !Array.isArray(allPosts) ||
+      !Array.isArray(
+        allPosts
+      ) ||
       allPosts.length === 0
     ) {
+
       return [];
     }
 
     const hashtag =
       job.customHashtag || '';
-
-    // -------------------------------------------------------
-    // Only exclude:
-    //
-    // same post + same hashtag
-    //
-    // A different hashtag can process
-    // the same post again.
-    // -------------------------------------------------------
 
     const available =
       allPosts.filter(
@@ -175,7 +210,7 @@ class AtomicWorker {
       );
 
     console.log(
-      `📊 Found ${allPosts.length} posts`
+      `📊 Found ${allPosts.length} post(s)`
     );
 
     console.log(
@@ -186,11 +221,15 @@ class AtomicWorker {
   }
 
   // =========================================================
-  // Main Task
+  // MAIN TASK
   // =========================================================
 
   async processNextTask() {
-    if (this.isProcessing) {
+
+    if (
+      this.isProcessing
+    ) {
+
       console.log(
         '⏳ Previous task still processing...'
       );
@@ -199,10 +238,12 @@ class AtomicWorker {
     }
 
     try {
-      this.isProcessing = true;
+
+      this.isProcessing =
+        true;
 
       // -----------------------------------------------------
-      // 1. Get job
+      // 1. JOB
       // -----------------------------------------------------
 
       const job =
@@ -214,20 +255,52 @@ class AtomicWorker {
         !job ||
         !job.isRunning
       ) {
+
         return;
       }
 
+      console.log(
+        '\n==============================================='
+      );
+
+      console.log(
+        '⚙️ ATOMIC WORKER TASK'
+      );
+
+      console.log(
+        `📌 Progress: ${job.completedCount}/${job.totalTarget}`
+      );
+
+      console.log(
+        `🌐 Group: ${job.groupUrl}`
+      );
+
+      console.log(
+        `🏷️ Hashtag: ${job.customHashtag || '[EMPTY]'}`
+      );
+
+      console.log(
+        '===============================================\n'
+      );
+
       // -----------------------------------------------------
-      // 2. Check target
+      // 2. TARGET
       // -----------------------------------------------------
 
       if (
-        job.completedCount >=
-        job.totalTarget
+        Number(
+          job.completedCount || 0
+        ) >=
+        Number(
+          job.totalTarget || 0
+        )
       ) {
-        job.isRunning = false;
 
-        job.pendingPosts = [];
+        job.isRunning =
+          false;
+
+        job.pendingPosts =
+          [];
 
         await job.save();
 
@@ -239,39 +312,60 @@ class AtomicWorker {
       }
 
       // -----------------------------------------------------
-      // 3. Active cookie
+      // 3. SELECT VALID COOKIE ACCOUNT
       // -----------------------------------------------------
 
+      console.log(
+        '🍪 Checking Facebook cookie accounts...'
+      );
+
       const activeCookieDoc =
-        await Cookie.findOne({
-          status: 'ACTIVE'
-        });
+        await cookieManager
+          .getActiveCookieDocument();
 
       if (!activeCookieDoc) {
+
         console.error(
-          '❌ لا توجد حسابات كوكيز نشطة!'
+          '❌ لا يوجد حساب Facebook ACTIVE يحتوي على كوكيز صالحة.'
+        );
+
+        console.error(
+          '❌ المهمة ستتوقف مؤقتًا حتى يتم إصلاح/إضافة الكوكيز.'
         );
 
         return;
       }
 
+      console.log(
+        `✅ Selected account: ${activeCookieDoc.accountName}`
+      );
+
+      console.log(
+        `🍪 Cookies available: ${activeCookieDoc.cookies.length}`
+      );
+
       // -----------------------------------------------------
-      // 4. Discover posts
+      // 4. TARGET POST
       // -----------------------------------------------------
 
-      let targetPostUrl = null;
+      let targetPostUrl =
+        null;
 
-      // أولاً حاول استخدام pendingPosts
-      // ولكن تحقق أنها مناسبة للهاشتاغ الحالي
+      // -----------------------------------------------------
+      // PENDING QUEUE
+      // -----------------------------------------------------
+
       if (
         Array.isArray(
           job.pendingPosts
         ) &&
         job.pendingPosts.length > 0
       ) {
+
         while (
           job.pendingPosts.length > 0
         ) {
+
           const candidate =
             job.pendingPosts.shift();
 
@@ -282,6 +376,7 @@ class AtomicWorker {
               job.customHashtag
             )
           ) {
+
             targetPostUrl =
               candidate;
 
@@ -293,11 +388,13 @@ class AtomicWorker {
       }
 
       // -----------------------------------------------------
-      // إذا لم نجد منشوراً في queue
-      // نبحث عن كل المنشورات من جديد
+      // DISCOVER NEW POSTS
       // -----------------------------------------------------
 
-      if (!targetPostUrl) {
+      if (
+        !targetPostUrl
+      ) {
+
         console.log(
           '🔎 Searching group posts...'
         );
@@ -311,6 +408,7 @@ class AtomicWorker {
         if (
           availablePosts.length === 0
         ) {
+
           console.log(
             '⌛ لا توجد منشورات متاحة لهذا الهاشتاغ حالياً.'
           );
@@ -318,7 +416,6 @@ class AtomicWorker {
           return;
         }
 
-        // نضع البقية في queue
         targetPostUrl =
           availablePosts.shift();
 
@@ -328,7 +425,14 @@ class AtomicWorker {
         await job.save();
       }
 
-      if (!targetPostUrl) {
+      // -----------------------------------------------------
+      // VALIDATE TARGET
+      // -----------------------------------------------------
+
+      if (
+        !targetPostUrl
+      ) {
+
         console.log(
           '⌛ لم يتم اختيار منشور.'
         );
@@ -345,8 +449,12 @@ class AtomicWorker {
       );
 
       // -----------------------------------------------------
-      // 5. Read post
+      // 5. FETCH POST
       // -----------------------------------------------------
+
+      console.log(
+        `📖 Reading post using account: ${activeCookieDoc.accountName}`
+      );
 
       const postText =
         await facebookService
@@ -355,9 +463,12 @@ class AtomicWorker {
             targetPostUrl
           );
 
-      if (!postText) {
+      if (
+        !postText
+      ) {
+
         throw new Error(
-          'لم يتم العثور على نص المنشور'
+          'POST_TEXT_ERROR: لم يتم العثور على نص المنشور'
         );
       }
 
@@ -366,8 +477,12 @@ class AtomicWorker {
       );
 
       // -----------------------------------------------------
-      // 6. Generate AI comment
+      // 6. GEMINI
       // -----------------------------------------------------
+
+      console.log(
+        '🤖 Generating AI comment...'
+      );
 
       const aiComment =
         await geminiService
@@ -378,16 +493,27 @@ class AtomicWorker {
 
       if (
         !aiComment ||
-        !aiComment.trim()
+        !String(
+          aiComment
+        ).trim()
       ) {
+
         throw new Error(
-          'Gemini لم يُرجع تعليقاً صالحاً'
+          'AI_ERROR: Gemini did not return a valid comment'
         );
       }
 
+      console.log(
+        `🤖 AI comment generated: ${String(aiComment).length} characters`
+      );
+
       // -----------------------------------------------------
-      // 7. Submit comments
+      // 7. SUBMIT
       // -----------------------------------------------------
+
+      console.log(
+        `💬 Submitting comments using account: ${activeCookieDoc.accountName}`
+      );
 
       await facebookService
         .submitDualComments(
@@ -398,10 +524,7 @@ class AtomicWorker {
         );
 
       // -----------------------------------------------------
-      // 8. Mark:
-      //
-      // POST + HASHTAG
-      //
+      // 8. MARK PROCESSED
       // -----------------------------------------------------
 
       await this._markAsProcessed(
@@ -411,7 +534,7 @@ class AtomicWorker {
       );
 
       // -----------------------------------------------------
-      // 9. Update completed count
+      // 9. PROGRESS
       // -----------------------------------------------------
 
       job.completedCount =
@@ -426,6 +549,10 @@ class AtomicWorker {
       );
 
       console.log(
+        `👤 Account: ${activeCookieDoc.accountName}`
+      );
+
+      console.log(
         `📌 Post: ${targetPostUrl}`
       );
 
@@ -434,14 +561,33 @@ class AtomicWorker {
       );
 
     } catch (error) {
+
       console.error(
-        `⚠️ خطأ أثناء تنفيذ المهمة الذرية: ${error.message}`
+        '\n========== ATOMIC WORKER ERROR =========='
+      );
+
+      console.error(
+        `❌ Message: ${error?.message || error}`
+      );
+
+      if (error?.stack) {
+
+        console.error(
+          error.stack
+        );
+      }
+
+      console.error(
+        '==========================================\n'
       );
 
     } finally {
-      this.isProcessing = false;
+
+      this.isProcessing =
+        false;
 
       if (global.gc) {
+
         try {
           global.gc();
         } catch {}
