@@ -12,9 +12,9 @@ router.post('/', (req, res) =>
 
 router.get('/test', (req, res) => {
   res.status(200).json({
-    status: 'success',
-    webhook: 'working',
-    timestamp: new Date().toISOString()
+    ok: true,
+    webhook: '/webhook',
+    time: new Date().toISOString()
   });
 });
 
