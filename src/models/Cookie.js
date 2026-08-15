@@ -4,7 +4,6 @@ const mongoose = require('mongoose');
 
 const cookieSchema = new mongoose.Schema(
   {
-    // اسم حساب Facebook
     accountName: {
       type: String,
       required: true,
@@ -12,44 +11,65 @@ const cookieSchema = new mongoose.Schema(
       trim: true
     },
 
-    // Facebook cookies
+    /*
+     * يمكن أن يكون:
+     *
+     * 1) Array:
+     * [
+     *   { name: 'datr', value: '...' },
+     *   { name: 'c_user', value: '...' },
+     *   { name: 'xs', value: '...' },
+     *   { name: 'fr', value: '...' }
+     * ]
+     *
+     * أو:
+     *
+     * 2) Cookie Header String:
+     * datr=...;sb=...;c_user=...;xs=...;fr=...
+     */
     cookies: {
-      type: Array,
+      type: mongoose.Schema.Types.Mixed,
+      required: true,
       default: []
     },
 
-    // حالة الحساب
     status: {
       type: String,
-      enum: [
-        'ACTIVE',
-        'BLOCKED',
-        'EXPIRED'
-      ],
+      enum: ['ACTIVE', 'BLOCKED', 'EXPIRED'],
       default: 'ACTIVE'
     },
 
-    // سبب آخر فشل
-    lastError: {
-      type: String,
-      default: null
-    },
-
-    // وقت آخر فحص
-    lastCheckedAt: {
+    cooldownUntil: {
       type: Date,
       default: null
     },
 
-    // وقت آخر استخدام
     lastUsedAt: {
       type: Date,
       default: null
     },
 
-    // وقت انتهاء الحظر المؤقت
-    cooldownUntil: {
+    lastValidationAt: {
       type: Date,
+      default: null
+    },
+
+    lastValidationStatus: {
+      type: String,
+      enum: [
+        'VALID',
+        'INVALID',
+        'EMPTY',
+        'MISSING_REQUIRED',
+        'INVALID_FORMAT',
+        'ERROR',
+        null
+      ],
+      default: null
+    },
+
+    lastValidationReason: {
+      type: String,
       default: null
     }
   },
@@ -59,7 +79,4 @@ const cookieSchema = new mongoose.Schema(
 );
 
 module.exports =
-  mongoose.model(
-    'Cookie',
-    cookieSchema
-  );
+  mongoose.model('Cookie', cookieSchema);
