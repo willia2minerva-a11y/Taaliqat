@@ -1,6 +1,6 @@
 {
   "name": "taaliqat-bot",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Facebook Automated Commenting Engine powered by Gemini AI and Puppeteer",
   "main": "src/server.js",
   "scripts": {
