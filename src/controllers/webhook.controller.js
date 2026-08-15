@@ -1,297 +1,318 @@
-// src/controllers/webhook.controller.js
 const config = require('../config');
 const jobService = require('../services/job.service');
 const messengerService = require('../services/messenger.service');
-const cookieManagerService = require('../services/cookieManager.service');
-const Cookie = require('../models/Cookie');
+const cookieManager = require('../services/cookieManager.service');
 const Post = require('../models/Post');
 const JobState = require('../models/JobState');
 
 class WebhookController {
+
   verifyWebhook(req, res) {
-    console.log('📥 Webhook verification request received');
-    console.log('📋 Query params:', req.query);
+    console.log('[WEBHOOK] 🔍 Verification request');
 
     const mode = req.query['hub.mode'] || req.query.hub_mode;
     const token = req.query['hub.verify_token'] || req.query.hub_verify_token;
     const challenge = req.query['hub.challenge'] || req.query.hub_challenge;
 
-    console.log(`🔍 Mode: ${mode}`);
-    console.log(`🔐 Token received: ${token}`);
-    console.log(`🔑 Expected token: ${config.verifyToken}`);
-
-    if (!mode || !token) {
-      console.log('❌ Missing mode or token');
-      return res.status(400).send('Missing hub.mode or hub.verify_token');
-    }
-
     if (mode === 'subscribe' && token === config.verifyToken) {
-      console.log('✅ WEBHOOK_VERIFIED successfully!');
+      console.log('[WEBHOOK] ✅ VERIFIED');
       return res.status(200).send(challenge);
-    } else {
-      console.log(`❌ Verification failed: Token mismatch`);
-      return res.status(403).send('Forbidden: Token mismatch');
     }
+
+    console.error('[WEBHOOK] ❌ Verification failed');
+    return res.status(403).send('Forbidden');
   }
 
   async handleWebhookEvent(req, res) {
+    console.log('\n[WEBHOOK] 📨 POST /webhook received');
+
     const body = req.body;
-    console.log('📨 Webhook event received');
 
-    if (!body.object || body.object !== 'page') {
-      return res.status(404).send('Invalid webhook object');
+    console.log('[WEBHOOK] Object:', body?.object || 'NONE');
+    console.log('[WEBHOOK] Entries:', Array.isArray(body?.entry) ? body.entry.length : 0);
+
+    if (body?.object !== 'page') {
+      console.warn('[WEBHOOK] ⚠️ Invalid object');
+      return res.status(200).send('EVENT_RECEIVED');
     }
 
-    for (const entry of body.entry) {
-      if (!entry.messaging) continue;
+    // يجب الرد على Meta بسرعة وعدم انتظار Gemini/Facebook
+    res.status(200).send('EVENT_RECEIVED');
 
-      for (const webhookEvent of entry.messaging) {
-        const senderPsid = webhookEvent.sender?.id;
-        if (!senderPsid) continue;
+    // المعالجة بعد إرسال 200
+    setImmediate(async () => {
+      try {
+        for (const entry of body.entry || []) {
+          for (const event of entry.messaging || []) {
+            const senderId = event.sender?.id;
 
-        if (webhookEvent.message?.text) {
-          await this._processCommand(senderPsid, webhookEvent.message.text.trim());
+            if (!senderId) {
+              console.warn('[WEBHOOK] ⚠️ Event without sender');
+              continue;
+            }
+
+            console.log(`[WEBHOOK] 👤 Sender: ${senderId}`);
+
+            if (event.message?.is_echo) {
+              console.log('[WEBHOOK] ↩️ Ignoring echo');
+              continue;
+            }
+
+            const text = event.message?.text?.trim();
+
+            if (!text) {
+              console.log('[WEBHOOK] ℹ️ No text message');
+              continue;
+            }
+
+            console.log(`[WEBHOOK] 💬 Message: ${text}`);
+
+            await this._processCommand(senderId, text);
+          }
         }
+      } catch (error) {
+        console.error('[WEBHOOK] ❌ Event processing error:', error.message);
+        console.error(error.stack);
       }
-    }
+    });
+  }
 
-    return res.status(200).send('EVENT_RECEIVED');
+  async _send(id, text) {
+    try {
+      console.log(`[WEBHOOK] 📤 Replying to ${id}`);
+      await messengerService.sendTextMessage(id, text);
+      console.log('[WEBHOOK] ✅ Reply sent');
+    } catch (error) {
+      console.error('[WEBHOOK] ❌ Reply failed:', error.message);
+    }
   }
 
   async _processCommand(senderId, text) {
-    console.log(`⚙️ Processing command: "${text}" from ${senderId}`);
+    console.log(`[COMMAND] ⚙️ "${text}" from ${senderId}`);
 
     try {
-      // ============================================
-      // 📌 أمر تشغيل البوت
-      // ============================================
       if (text.startsWith('/تشغيل')) {
-        const parts = text.split(' ');
+        const parts = text.split(/\s+/);
         const count = parseInt(parts[1]) || 100;
         const hours = parseInt(parts[2]) || 1;
-        const comment = parts.slice(3).join(' ') || '✯⁠[#عشيرة_البيجو]✯⁠';
+        const hashtag = parts.slice(3).join(' ') || '✯⁠[#عشيرة_البيجو]✯⁠';
 
-        await jobService.startNewJob(count, config.fbGroupUrl, comment);
-        
-        await messengerService.sendTextMessage(
+        await jobService.startNewJob(
+          count,
+          config.fbGroupUrl,
+          hashtag
+        );
+
+        return this._send(
           senderId,
           `🚀 تم إطلاق المهمة بنجاح!\n\n` +
-          `• المنشورات المستهدفة: ${count}\n` +
-          `• المدة الزمنية: ${hours} ساعة\n` +
-          `• نص التعليق: ${comment}`
+          `• المنشورات: ${count}\n` +
+          `• المدة: ${hours} ساعة\n` +
+          `• التعليق: ${hashtag}`
         );
       }
 
-      // ============================================
-      // ⏹️ أمر إيقاف البوت
-      // ============================================
-      else if (text === '/ايقاف' || text === '/stop') {
+      if (text === '/ايقاف' || text === '/stop') {
         await jobService.stopJob();
-        await messengerService.sendTextMessage(
+
+        return this._send(
           senderId,
-          '🛑 تم إيقاف البوت وإلغاء جميع المهام المعلقة.'
+          '🛑 تم إيقاف البوت وإلغاء المهام المعلقة.'
         );
       }
 
-      // ============================================
-      // 📊 أمر عرض الحالة
-      // ============================================
-      else if (text === '/حالة' || text === '/status') {
+      if (text === '/حالة' || text === '/status') {
         const job = await jobService.getOrCreateJob();
-        const status = job.isRunning ? '🟢 نشط' : '🔴 متوقف';
-        const progress = job.totalTarget > 0 
-          ? `${job.completedCount} / ${job.totalTarget}` 
-          : '0 / 0';
+        const accounts = await cookieManager.getAllCookies();
 
-        const allCookies = await cookieManagerService.getAllCookies();
-        const activeCount = allCookies.filter(c => c.status === 'ACTIVE').length;
-        const blockedCount = allCookies.filter(c => c.status === 'BLOCKED').length;
+        const active = accounts.filter(x => x.status === 'ACTIVE').length;
+        const blocked = accounts.filter(x => x.status === 'BLOCKED').length;
+        const expired = accounts.filter(x => x.status === 'EXPIRED').length;
 
-        await messengerService.sendTextMessage(
+        return this._send(
           senderId,
-          `📊 **حالة النظام الحالية:**\n\n` +
-          `• حالة المهمة: ${status}\n` +
-          `• نسبة الإنجاز: ${progress}\n` +
-          `• الحسابات النشطة: ${activeCount}\n` +
-          `• الحسابات المعطلة: ${blockedCount}`
+          `📊 حالة النظام\n\n` +
+          `• المهمة: ${job.isRunning ? '🟢 نشطة' : '🔴 متوقفة'}\n` +
+          `• التقدم: ${job.completedCount || 0}/${job.totalTarget || 0}\n` +
+          `• ACTIVE: ${active}\n` +
+          `• BLOCKED: ${blocked}\n` +
+          `• EXPIRED: ${expired}`
         );
       }
 
-      // ============================================
-      // 💬 عرض روابط آخر المنشورات
-      // ============================================
-      else if (text === '/التعليقات' || text === '/comments') {
-        const posts = await Post.find().sort({ createdAt: -1 }).limit(10);
-        
-        if (posts.length === 0) {
-          await messengerService.sendTextMessage(
-            senderId,
-            '📭 لا توجد تعليقات مسجلة حتى الآن.'
-          );
-        } else {
-          let message = '💬 **آخر المنشورات التي تم التعليق عليها:**\n\n';
-          posts.forEach((post, index) => {
-            message += `${index + 1}. ${post.postUrl}\n`;
-          });
-          await messengerService.sendTextMessage(senderId, message);
+      if (text === '/التعليقات' || text === '/comments') {
+        const posts = await Post.find()
+          .sort({ createdAt: -1 })
+          .limit(10);
+
+        if (!posts.length) {
+          return this._send(senderId, '📭 لا توجد تعليقات مسجلة.');
         }
+
+        let msg = '💬 آخر المنشورات:\n\n';
+        posts.forEach((p, i) => {
+          msg += `${i + 1}. ${p.postUrl}\n`;
+        });
+
+        return this._send(senderId, msg);
       }
 
-      // ============================================
-      // 🔑 إضافة كوكيز جديدة
-      // ============================================
-      else if (text.startsWith('/كوكيز')) {
-        const parts = text.split(' ');
+      if (text.startsWith('/كوكيز')) {
+        const parts = text.split(/\s+/);
         const accountName = parts[1];
-        const cookieString = parts.slice(2).join(' ');
+        const cookieString = parts.slice(2).join(' ').trim();
 
         if (!accountName || !cookieString) {
-          await messengerService.sendTextMessage(
+          return this._send(
             senderId,
-            '❌ الصيغة الصحيحة:\n/كوكيز [اسم_الحساب] [الكوكيز]'
+            '❌ الصيغة:\n/كوكيز [اسم_الحساب] [الكوكيز]'
           );
-          return;
         }
 
-        const cookies = cookieString.split('; ').map(cookie => {
-          const [name, value] = cookie.split('=');
-          return { name, value, domain: '.facebook.com', path: '/' };
-        });
+        const cookies = cookieString
+          .split(';')
+          .map(x => x.trim())
+          .filter(Boolean)
+          .map(x => {
+            const i = x.indexOf('=');
+            if (i < 1) return null;
 
-        await cookieManagerService.addCookies(accountName, cookies);
-        await messengerService.sendTextMessage(
+            return {
+              name: x.slice(0, i).trim(),
+              value: x.slice(i + 1).trim(),
+              domain: '.facebook.com',
+              path: '/'
+            };
+          })
+          .filter(Boolean);
+
+        if (!cookies.length) {
+          return this._send(
+            senderId,
+            '❌ لم يتم التعرف على أي Cookie.'
+          );
+        }
+
+        const names = cookies.map(x => x.name);
+        console.log(
+          `[COOKIE INPUT] 👤 ${accountName} | COUNT=${cookies.length} | NAMES=${names.join(',')}`
+        );
+
+        await cookieManager.addCookies(
+          accountName,
+          cookies
+        );
+
+        return this._send(
           senderId,
-          `✅ تم إضافة حساب **${accountName}** بنجاح!`
+          `✅ تم حفظ حساب ${accountName}\n🍪 عدد الكوكيز: ${cookies.length}\n📋 ${names.join(', ')}`
         );
       }
 
-      // ============================================
-      // 👥 عرض جميع الحسابات
-      // ============================================
-      else if (text === '/الحسابات' || text === '/accounts') {
-        const allCookies = await cookieManagerService.getAllCookies();
-        
-        if (allCookies.length === 0) {
-          await messengerService.sendTextMessage(
-            senderId,
-            '📭 لا توجد حسابات مسجلة.'
-          );
-          return;
+      if (text === '/الحسابات' || text === '/accounts') {
+        const accounts = await cookieManager.getAllCookies();
+
+        if (!accounts.length) {
+          return this._send(senderId, '📭 لا توجد حسابات.');
         }
 
-        let message = '📜 **قائمة الحسابات المسجلة:**\n\n';
-        allCookies.forEach(cookie => {
-          const status = cookie.status === 'ACTIVE' ? '🟢' : '🔴';
-          // ✅ استخدام cookie.accountName بدلاً من cookie.name
-          const name = cookie.accountName || 'غير معروف';
-          message += `${status} ${name} - نجاح: ${cookie.visitedCount || 0}\n`;
-        });
+        let msg = '📜 حسابات Facebook\n\n';
 
-        message += '\n💡 لحذف حساب محدد: /حذف [اسم_الحساب]\n';
-        message += '💡 لتنظيف الأحمر: /حذف_غير_نشط';
+        for (const account of accounts) {
+          const name = account.accountName || 'UNKNOWN';
+          const count = Array.isArray(account.cookies)
+            ? account.cookies.length
+            : 0;
 
-        await messengerService.sendTextMessage(senderId, message);
+          const status =
+            account.status === 'ACTIVE' ? '🟢' :
+            account.status === 'BLOCKED' ? '🔴' : '🟠';
+
+          msg += `${status} ${name}\n`;
+          msg += `🍪 Cookies: ${count}\n`;
+          msg += `📅 آخر استخدام: ${
+            account.lastUsedAt
+              ? new Date(account.lastUsedAt).toLocaleString('ar-DZ')
+              : 'لم يستخدم'
+          }\n\n`;
+        }
+
+        return this._send(senderId, msg);
       }
 
-      // ============================================
-      // 🗑️ حذف حساب محدد
-      // ============================================
-      else if (text.startsWith('/حذف')) {
-        // ✅ التحقق من أن الأمر ليس /حذف_غير_نشط
-        if (text === '/حذف_غير_نشط' || text === '/clean') {
-          const result = await cookieManagerService.deleteInactiveAccounts();
-          await messengerService.sendTextMessage(
-            senderId,
-            `🧹 تم حذف **${result.deletedCount}** حساب غير نشط.`
-          );
-          return;
-        }
+      if (text === '/حذف_غير_نشط' || text === '/clean') {
+        const result =
+          await cookieManager.deleteInactiveAccounts();
 
-        const parts = text.split(' ');
-        const accountName = parts[1];
-
-        if (!accountName) {
-          await messengerService.sendTextMessage(
-            senderId,
-            '❌ الصيغة الصحيحة:\n/حذف [اسم_الحساب]'
-          );
-          return;
-        }
-
-        const result = await cookieManagerService.deleteAccount(accountName);
-        if (result) {
-          await messengerService.sendTextMessage(
-            senderId,
-            `✅ تم حذف حساب **${accountName}** بنجاح.`
-          );
-        } else {
-          await messengerService.sendTextMessage(
-            senderId,
-            `❌ لم يتم العثور على حساب باسم **${accountName}**.`
-          );
-        }
-      }
-
-      // ============================================
-      // 🧹 حذف الحسابات غير النشطة (اختصار)
-      // ============================================
-      else if (text === '/حذف_غير_نشط' || text === '/clean') {
-        const result = await cookieManagerService.deleteInactiveAccounts();
-        await messengerService.sendTextMessage(
+        return this._send(
           senderId,
-          `🧹 تم حذف **${result.deletedCount}** حساب غير نشط.`
+          `🧹 تم حذف ${result.deletedCount} حساب غير نشط.`
         );
       }
 
-      // ============================================
-      // 📋 عرض السجلات الأخيرة
-      // ============================================
-      else if (text === '/سجل' || text === '/logs') {
-        const job = await JobState.findOne({ jobId: 'main_job' });
-        
-        if (!job || job.visitedPosts.length === 0) {
-          await messengerService.sendTextMessage(
+      if (text.startsWith('/حذف ')) {
+        const name = text.slice(6).trim();
+
+        if (!name) {
+          return this._send(
             senderId,
-            '📭 لا توجد سجلات متاحة.'
+            '❌ الصيغة:\n/حذف [اسم_الحساب]'
           );
-          return;
         }
 
-        const lastPosts = job.visitedPosts.slice(-5);
-        let message = '📋 **آخر 5 منشورات تم التعليق عليها:**\n\n';
-        lastPosts.forEach((post, index) => {
-          message += `${index + 1}. ${post}\n`;
-        });
+        const result =
+          await cookieManager.deleteAccount(name);
 
-        message += `\n📊 إجمالي المنشورات: ${job.visitedPosts.length}`;
-        await messengerService.sendTextMessage(senderId, message);
-      }
-
-      // ============================================
-      // ❓ أوامر غير معروفة
-      // ============================================
-      else {
-        await messengerService.sendTextMessage(
+        return this._send(
           senderId,
-          '🤖 **قائمة الأوامر الشاملة:**\n\n' +
-          '▶️ /تشغيل [عدد] [ساعات] [التعليق]\n' +
-          '⏹️ /ايقاف - إيقاف المهمة الحالية\n' +
-          '📊 /حالة - عرض حالة المهمة\n' +
-          '💬 /التعليقات - عرض روابط آخر المنشورات\n' +
-          '🔑 /كوكيز [الاسم] [الكوكيز]\n' +
-          '👥 /الحسابات - عرض جميع الحسابات\n' +
-          '🗑️ /حذف [الاسم] - حذف حساب محدد\n' +
-          '🧹 /حذف_غير_نشط - حذف الحسابات الحمراء\n' +
-          '📋 /سجل - عرض السجلات الأخيرة'
+          result
+            ? `✅ تم حذف ${name}.`
+            : `❌ الحساب ${name} غير موجود.`
         );
       }
+
+      if (text === '/سجل' || text === '/logs') {
+        const job =
+          await JobState.findOne({ jobId: 'main_job' });
+
+        if (!job?.visitedPosts?.length) {
+          return this._send(
+            senderId,
+            '📭 لا توجد سجلات.'
+          );
+        }
+
+        const posts = job.visitedPosts.slice(-5);
+        let msg = '📋 آخر 5 عمليات:\n\n';
+
+        posts.forEach((p, i) => {
+          msg += `${i + 1}. ${p}\n`;
+        });
+
+        return this._send(senderId, msg);
+      }
+
+      return this._send(
+        senderId,
+        '🤖 الأوامر:\n\n' +
+        '/تشغيل [عدد] [ساعات] [التعليق]\n' +
+        '/ايقاف\n' +
+        '/حالة\n' +
+        '/التعليقات\n' +
+        '/كوكيز [الاسم] [الكوكيز]\n' +
+        '/الحسابات\n' +
+        '/حذف [الاسم]\n' +
+        '/حذف_غير_نشط\n' +
+        '/سجل'
+      );
 
     } catch (error) {
-      console.error(`❌ Command error: ${error.message}`);
-      console.error(`📚 Stack: ${error.stack}`);
-      await messengerService.sendTextMessage(
+      console.error('[COMMAND] ❌', error.message);
+      console.error(error.stack);
+
+      await this._send(
         senderId,
-        `❌ حدث خطأ: ${error.message}`
+        `❌ حدث خطأ:\n${error.message}`
       );
     }
   }
