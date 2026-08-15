@@ -1,5 +1,3 @@
-// src/services/facebook.service.js
-
 const puppeteer = require('puppeteer');
 
 class FacebookService {
@@ -10,7 +8,7 @@ class FacebookService {
   }
 
   // =========================================================
-  // Browser
+  // Launch Browser
   // =========================================================
 
   async _launchBrowser() {
@@ -19,40 +17,35 @@ class FacebookService {
     const browser = await puppeteer.launch({
       headless: true,
 
-      protocolTimeout: 60000,
       timeout: 60000,
+      protocolTimeout: 60000,
 
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-
-        // مهم جداً على Render
         '--disable-dev-shm-usage',
 
-        // تقليل استهلاك الذاكرة
         '--disable-gpu',
         '--disable-software-rasterizer',
+
         '--disable-background-networking',
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
 
-        // منع الخدمات غير الضرورية
         '--disable-extensions',
         '--disable-sync',
         '--disable-translate',
         '--disable-default-apps',
+
         '--no-first-run',
         '--no-default-browser-check',
 
-        // تقليل العمليات غير الضرورية
+        '--disable-notifications',
+        '--disable-popup-blocking',
+
         '--disable-features=Translate,BackForwardCache',
 
-        // تحسين الاستقرار في السيرفر
-        '--disable-popup-blocking',
-        '--disable-notifications',
-
-        // حجم نافذة ثابت
         '--window-size=1280,720'
       ],
 
@@ -70,7 +63,7 @@ class FacebookService {
     console.log('✅ Chromium launched');
 
     if (!browser.isConnected()) {
-      throw new Error('Chromium launched but is not connected');
+      throw new Error('Chromium is not connected');
     }
 
     browser.on('disconnected', () => {
@@ -81,7 +74,7 @@ class FacebookService {
   }
 
   // =========================================================
-  // Page
+  // Create Page
   // =========================================================
 
   async _createCleanPage(browser, rawCookies) {
@@ -91,10 +84,18 @@ class FacebookService {
 
     const page = await browser.newPage();
 
-    page.setDefaultNavigationTimeout(this.navigationTimeout);
-    page.setDefaultTimeout(this.actionTimeout);
+    page.setDefaultNavigationTimeout(
+      this.navigationTimeout
+    );
 
-    // منع تحميل الأشياء غير الضرورية
+    page.setDefaultTimeout(
+      this.actionTimeout
+    );
+
+    // -------------------------------------------------------
+    // Block unnecessary resources
+    // -------------------------------------------------------
+
     await page.setRequestInterception(true);
 
     page.on('request', request => {
@@ -114,59 +115,61 @@ class FacebookService {
         } else {
           request.continue();
         }
-      } catch {
-        // request قد يكون انتهى
-      }
-    });
-
-    // منع بعض النوافذ والإعلانات
-    page.on('dialog', async dialog => {
-      try {
-        await dialog.dismiss();
       } catch {}
     });
 
-    // =======================================================
+    // -------------------------------------------------------
     // Cookies
-    // =======================================================
+    // -------------------------------------------------------
 
-    if (Array.isArray(rawCookies) && rawCookies.length > 0) {
-      const formattedCookies = rawCookies
-        .filter(cookie => cookie && cookie.name && cookie.value)
+    if (
+      Array.isArray(rawCookies) &&
+      rawCookies.length > 0
+    ) {
+      const cookies = rawCookies
+        .filter(
+          cookie =>
+            cookie &&
+            cookie.name &&
+            cookie.value
+        )
         .map(cookie => {
           const formatted = {
             name: cookie.name,
             value: String(cookie.value),
-            domain: cookie.domain || '.facebook.com',
-            path: cookie.path || '/',
-            secure: cookie.secure !== false,
-            httpOnly: Boolean(cookie.httpOnly)
+
+            domain:
+              cookie.domain ||
+              '.facebook.com',
+
+            path:
+              cookie.path ||
+              '/',
+
+            secure:
+              cookie.secure !== false,
+
+            httpOnly:
+              Boolean(cookie.httpOnly)
           };
 
-          if (cookie.expires && Number(cookie.expires) > 0) {
-            formatted.expires = Number(cookie.expires);
-          }
-
-          if (cookie.sameSite) {
-            const sameSite = String(cookie.sameSite).toLowerCase();
-
-            if (
-              ['strict', 'lax', 'none'].includes(sameSite)
-            ) {
-              formatted.sameSite =
-                sameSite.charAt(0).toUpperCase() +
-                sameSite.slice(1);
-            }
+          if (
+            cookie.expires &&
+            Number(cookie.expires) > 0
+          ) {
+            formatted.expires =
+              Number(cookie.expires);
           }
 
           return formatted;
         });
 
-      if (formattedCookies.length > 0) {
+      if (cookies.length > 0) {
         try {
-          await page.setCookie(...formattedCookies);
+          await page.setCookie(...cookies);
+
           console.log(
-            `🍪 Loaded ${formattedCookies.length} cookies`
+            `🍪 Loaded ${cookies.length} cookies`
           );
         } catch (error) {
           console.warn(
@@ -180,7 +183,7 @@ class FacebookService {
   }
 
   // =========================================================
-  // Safe close
+  // Safe Close
   // =========================================================
 
   async _closePage(page) {
@@ -200,24 +203,24 @@ class FacebookService {
       if (browser.isConnected()) {
         await browser.close();
       }
-    } catch (error) {
-      console.warn(
-        `⚠️ Browser close warning: ${error.message}`
-      );
-    }
+    } catch {}
   }
 
   // =========================================================
-  // Retry helper
+  // Retry
   // =========================================================
 
-  async _withRetry(operation, operationName) {
-    let lastError = null;
+  async _withRetry(operation, name) {
+    let lastError;
 
-    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+    for (
+      let attempt = 1;
+      attempt <= this.maxRetries;
+      attempt++
+    ) {
       try {
         console.log(
-          `🔄 ${operationName} - attempt ${attempt}/${this.maxRetries}`
+          `🔄 ${name} - attempt ${attempt}/${this.maxRetries}`
         );
 
         return await operation();
@@ -226,26 +229,19 @@ class FacebookService {
         lastError = error;
 
         console.error(
-          `❌ ${operationName} attempt ${attempt}: ${error.message}`
+          `❌ ${name} attempt ${attempt}: ${error.message}`
         );
 
-        if (attempt < this.maxRetries) {
-          const delay = attempt * 2500;
-
-          console.log(
-            `⏳ Retrying in ${delay}ms...`
-          );
-
+        if (
+          attempt <
+          this.maxRetries
+        ) {
           await new Promise(resolve =>
-            setTimeout(resolve, delay)
+            setTimeout(
+              resolve,
+              attempt * 2500
+            )
           );
-
-          // محاولة تنظيف الذاكرة
-          if (global.gc) {
-            try {
-              global.gc();
-            } catch {}
-          }
         }
       }
     }
@@ -254,13 +250,12 @@ class FacebookService {
   }
 
   // =========================================================
-  // Discover posts
+  // Discover ALL posts
   // =========================================================
 
   async discoverPendingPosts(
     rawCookies,
-    groupUrl,
-    visitedPosts = []
+    groupUrl
   ) {
     return this._withRetry(
       async () => {
@@ -272,80 +267,151 @@ class FacebookService {
             '🌐 Starting browser for discovery...'
           );
 
-          browser = await this._launchBrowser();
+          browser =
+            await this._launchBrowser();
 
-          page = await this._createCleanPage(
-            browser,
-            rawCookies
-          );
+          page =
+            await this._createCleanPage(
+              browser,
+              rawCookies
+            );
 
           console.log(
             `🌐 Navigating to: ${groupUrl}`
           );
 
           await page.goto(groupUrl, {
-            waitUntil: 'domcontentloaded',
-            timeout: this.navigationTimeout
+            waitUntil:
+              'domcontentloaded',
+
+            timeout:
+              this.navigationTimeout
           });
 
-          // إعطاء Facebook وقتاً بسيطاً لتوليد الروابط
+          // -------------------------------------------------
+          // Wait for Facebook feed
+          // -------------------------------------------------
+
           await new Promise(resolve =>
-            setTimeout(resolve, 2500)
+            setTimeout(resolve, 4000)
           );
 
-          const extractedLinks = await page.$$eval(
-            'a',
-            anchors => {
-              return anchors
-                .map(a => a.href)
-                .filter(href => {
-                  if (!href) return false;
+          // -------------------------------------------------
+          // Scroll to load more posts
+          // -------------------------------------------------
 
-                  return (
-                    href.includes('/story.php') ||
-                    href.includes('/groups/') ||
-                    href.includes('/posts/')
-                  );
-                });
-            }
-          );
+          for (let i = 0; i < 4; i++) {
+            await page.evaluate(() => {
+              window.scrollBy(
+                0,
+                1000
+              );
+            });
 
-          const cleanLinks = [
-            ...new Set(
-              extractedLinks.map(link => {
-                try {
-                  const url = new URL(link);
+            await new Promise(resolve =>
+              setTimeout(
+                resolve,
+                1200
+              )
+            );
+          }
 
-                  // إزالة tracking parameters
-                  url.search = '';
+          // -------------------------------------------------
+          // Extract post links
+          // -------------------------------------------------
 
-                  return url.toString();
-                } catch {
-                  return link.split('?')[0];
+          const links =
+            await page.$$eval(
+              'a[href]',
+              anchors => {
+                const result =
+                  new Set();
+
+                for (
+                  const anchor
+                  of anchors
+                ) {
+                  const href =
+                    anchor.href;
+
+                  if (!href)
+                    continue;
+
+                  try {
+                    const url =
+                      new URL(href);
+
+                    const path =
+                      url.pathname;
+
+                    const isPost =
+                      path.includes(
+                        '/posts/'
+                      ) ||
+                      path.includes(
+                        '/story.php'
+                      ) ||
+                      path.includes(
+                        '/permalink/'
+                      ) ||
+                      path.includes(
+                        '/photo/'
+                      ) ||
+                      path.includes(
+                        '/videos/'
+                      ) ||
+                      path.includes(
+                        '/reel/'
+                      );
+
+                    if (!isPost)
+                      continue;
+
+                    // Remove tracking
+                    // parameters
+                    url.searchParams.delete(
+                      'ref'
+                    );
+
+                    url.searchParams.delete(
+                      'refid'
+                    );
+
+                    url.searchParams.delete(
+                      'notif_id'
+                    );
+
+                    url.searchParams.delete(
+                      'notif_t'
+                    );
+
+                    result.add(
+                      url.toString()
+                    );
+
+                  } catch {}
                 }
-              })
-            )
-          ];
 
-          const visitedSet = new Set(
-            Array.isArray(visitedPosts)
-              ? visitedPosts
-              : []
-          );
-
-          const newPosts = cleanLinks.filter(
-            link => !visitedSet.has(link)
-          );
+                return [
+                  ...result
+                ];
+              }
+            );
 
           console.log(
-            `📝 Found ${newPosts.length} new posts`
+            `🔎 Total posts found: ${links.length}`
           );
 
-          return newPosts;
+          return links;
 
         } finally {
-          await this._closePage(page);
-          await this._closeBrowser(browser);
+          await this._closePage(
+            page
+          );
+
+          await this._closeBrowser(
+            browser
+          );
 
           if (global.gc) {
             try {
@@ -359,10 +425,13 @@ class FacebookService {
   }
 
   // =========================================================
-  // Fetch post text
+  // Fetch Post Text
   // =========================================================
 
-  async fetchPostText(rawCookies, postUrl) {
+  async fetchPostText(
+    rawCookies,
+    postUrl
+  ) {
     return this._withRetry(
       async () => {
         let browser = null;
@@ -373,62 +442,83 @@ class FacebookService {
             `📖 Reading post: ${postUrl}`
           );
 
-          browser = await this._launchBrowser();
+          browser =
+            await this._launchBrowser();
 
-          page = await this._createCleanPage(
-            browser,
-            rawCookies
+          page =
+            await this._createCleanPage(
+              browser,
+              rawCookies
+            );
+
+          await page.goto(
+            postUrl,
+            {
+              waitUntil:
+                'domcontentloaded',
+
+              timeout:
+                this.navigationTimeout
+            }
           );
-
-          await page.goto(postUrl, {
-            waitUntil: 'domcontentloaded',
-            timeout: this.navigationTimeout
-          });
 
           await new Promise(resolve =>
-            setTimeout(resolve, 2000)
+            setTimeout(resolve, 2500)
           );
 
-          const postText = await page.evaluate(() => {
-            const candidates = [];
+          const postText =
+            await page.evaluate(() => {
+              const elements =
+                document.querySelectorAll(
+                  'article, [role="article"], p, div'
+                );
 
-            const elements = document.querySelectorAll(
-              'article, [role="article"], p, div'
-            );
+              const texts = [];
 
-            for (const element of elements) {
-              const text =
-                element.innerText
-                  ?.replace(/\s+/g, ' ')
-                  .trim();
+              for (
+                const element
+                of elements
+              ) {
+                const text =
+                  element.innerText
+                    ?.replace(
+                      /\s+/g,
+                      ' '
+                    )
+                    .trim();
 
-              if (!text) continue;
+                if (
+                  text &&
+                  text.length >= 20
+                ) {
+                  texts.push(text);
+                }
+              }
 
-              // تجاهل النصوص الصغيرة جداً
-              if (text.length < 20) continue;
+              texts.sort(
+                (a, b) =>
+                  b.length -
+                  a.length
+              );
 
-              candidates.push(text);
-            }
+              return (
+                texts[0] || ''
+              );
+            });
 
-            // الأطول غالباً يحتوي محتوى المنشور
-            candidates.sort(
-              (a, b) => b.length - a.length
-            );
-
-            return candidates[0] || '';
-          });
-
-          console.log(
-            `📄 Extracted text length: ${
-              postText?.length || 0
-            }`
+          return (
+            postText ||
+            'منشور تفاعلي'
           );
-
-          return postText || 'منشور تفاعلي';
 
         } finally {
-          await this._closePage(page);
-          await this._closeBrowser(browser);
+          await this._closePage(
+            page
+          );
+
+          await this._closeBrowser(
+            browser
+          );
 
           if (global.gc) {
             try {
@@ -442,7 +532,7 @@ class FacebookService {
   }
 
   // =========================================================
-  // Submit comments
+  // Submit Comments
   // =========================================================
 
   async submitDualComments(
@@ -458,20 +548,28 @@ class FacebookService {
 
         try {
           console.log(
-            `💬 Opening post for commenting: ${postUrl}`
+            `💬 Opening post: ${postUrl}`
           );
 
-          browser = await this._launchBrowser();
+          browser =
+            await this._launchBrowser();
 
-          page = await this._createCleanPage(
-            browser,
-            rawCookies
+          page =
+            await this._createCleanPage(
+              browser,
+              rawCookies
+            );
+
+          await page.goto(
+            postUrl,
+            {
+              waitUntil:
+                'domcontentloaded',
+
+              timeout:
+                this.navigationTimeout
+            }
           );
-
-          await page.goto(postUrl, {
-            waitUntil: 'domcontentloaded',
-            timeout: this.navigationTimeout
-          });
 
           await new Promise(resolve =>
             setTimeout(resolve, 2500)
@@ -480,21 +578,24 @@ class FacebookService {
           const selector =
             'textarea[name="comment_text"], textarea';
 
-          await page.waitForSelector(selector, {
-            timeout: 15000
-          });
+          await page.waitForSelector(
+            selector,
+            {
+              timeout: 15000
+            }
+          );
 
-          // =================================================
-          // First comment
-          // =================================================
+          // -------------------------------------------------
+          // AI comment
+          // -------------------------------------------------
 
           if (
-            typeof aiComment === 'string' &&
+            aiComment &&
             aiComment.trim()
           ) {
-            console.log('💬 Writing AI comment...');
-
-            await page.click(selector);
+            await page.click(
+              selector
+            );
 
             await page.type(
               selector,
@@ -504,63 +605,78 @@ class FacebookService {
               }
             );
 
-            const submitBtn =
+            const submitButton =
               'input[type="submit"][name="post"], input[type="submit"]';
 
-            await page.waitForSelector(submitBtn, {
-              timeout: 10000
-            });
+            await page.waitForSelector(
+              submitButton,
+              {
+                timeout: 10000
+              }
+            );
 
-            await page.click(submitBtn);
+            await page.click(
+              submitButton
+            );
 
             await new Promise(resolve =>
-              setTimeout(resolve, 5000)
+              setTimeout(
+                resolve,
+                5000
+              )
             );
 
             console.log(
-              '✅ First comment submitted'
+              '✅ AI comment submitted'
             );
           }
 
-          // =================================================
-          // Second comment / hashtag
-          // =================================================
+          // -------------------------------------------------
+          // Hashtag
+          // -------------------------------------------------
 
           if (
-            typeof hashtag === 'string' &&
+            hashtag &&
             hashtag.trim()
           ) {
-            console.log(
-              '🏷️ Preparing second comment...'
-            );
-
-            // الصفحة قد تتغير بعد إرسال التعليق
             try {
               await page.waitForSelector(
                 selector,
-                { timeout: 10000 }
+                {
+                  timeout: 10000
+                }
               );
             } catch {
-              console.log(
-                '🔄 Comment box disappeared, reloading post...'
+              await page.goto(
+                postUrl,
+                {
+                  waitUntil:
+                    'domcontentloaded',
+
+                  timeout:
+                    this.navigationTimeout
+                }
               );
 
-              await page.goto(postUrl, {
-                waitUntil: 'domcontentloaded',
-                timeout: this.navigationTimeout
-              });
-
-              await new Promise(resolve =>
-                setTimeout(resolve, 2500)
+              await new Promise(
+                resolve =>
+                  setTimeout(
+                    resolve,
+                    2500
+                  )
               );
 
               await page.waitForSelector(
                 selector,
-                { timeout: 15000 }
+                {
+                  timeout: 15000
+                }
               );
             }
 
-            await page.click(selector);
+            await page.click(
+              selector
+            );
 
             await page.type(
               selector,
@@ -570,29 +686,42 @@ class FacebookService {
               }
             );
 
-            const submitBtn =
+            const submitButton =
               'input[type="submit"][name="post"], input[type="submit"]';
 
-            await page.waitForSelector(submitBtn, {
-              timeout: 10000
-            });
+            await page.waitForSelector(
+              submitButton,
+              {
+                timeout: 10000
+              }
+            );
 
-            await page.click(submitBtn);
+            await page.click(
+              submitButton
+            );
 
             await new Promise(resolve =>
-              setTimeout(resolve, 5000)
+              setTimeout(
+                resolve,
+                5000
+              )
             );
 
             console.log(
-              '✅ Second comment submitted'
+              '🏷️ Hashtag comment submitted'
             );
           }
 
           return true;
 
         } finally {
-          await this._closePage(page);
-          await this._closeBrowser(browser);
+          await this._closePage(
+            page
+          );
+
+          await this._closeBrowser(
+            browser
+          );
 
           if (global.gc) {
             try {
@@ -606,4 +735,5 @@ class FacebookService {
   }
 }
 
-module.exports = new FacebookService();
+module.exports =
+  new FacebookService();
