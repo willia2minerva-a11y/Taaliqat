@@ -1,8 +1,10 @@
-// src/services/job.service.js
 const JobState = require('../models/JobState');
+const cookieManagerService = require('./cookieManager.service');
+const facebookService = require('./facebook.service');
+const geminiService = require('./gemini.service');
 
 class JobService {
-  // ✅ الحصول على المهمة أو إنشاؤها
+  
   async getOrCreateJob() {
     let job = await JobState.findOne({ jobId: 'main_job' });
     if (!job) {
@@ -18,7 +20,6 @@ class JobService {
     return job;
   }
 
-  // ✅ بدء مهمة جديدة
   async startNewJob(targetCount, groupUrl, customHashtag) {
     let job = await this.getOrCreateJob();
     job.isRunning = true;
@@ -28,61 +29,187 @@ class JobService {
     job.customHashtag = customHashtag;
     job.pendingPosts = [];
     await job.save();
+    console.log(`🚀 Job started: ${targetCount} posts, group: ${groupUrl}`);
     return job;
   }
 
-  // ✅ إيقاف المهمة
   async stopJob() {
     let job = await this.getOrCreateJob();
     job.isRunning = false;
     job.pendingPosts = [];
     await job.save();
+    console.log('🛑 Job stopped');
     return job;
   }
 
-  // ✅ تحديث التقدم
-  async updateProgress(postUrl) {
-    let job = await this.getOrCreateJob();
-    if (job.isRunning) {
-      job.completedCount += 1;
-      job.visitedPosts.push(postUrl);
-      await job.save();
-    }
-    return job;
-  }
+  // =========================================================
+  // ✅ GET NEXT TARGET (identity + post)
+  // =========================================================
 
-  // ✅ إضافة منشورات معلقة
-  async addPendingPosts(posts) {
-    let job = await this.getOrCreateJob();
-    if (job.isRunning) {
-      const newPosts = posts.filter(p => !job.visitedPosts.includes(p) && !job.pendingPosts.includes(p));
-      job.pendingPosts = [...job.pendingPosts, ...newPosts];
-      await job.save();
+  async getNextTarget() {
+    const identity = await cookieManagerService.getNextAvailableIdentity();
+    if (!identity) {
+      console.log('⏳ No available identity');
+      return null;
     }
-    return job;
-  }
 
-  // ✅ الحصول على منشور تالٍ
-  async getNextPendingPost() {
-    let job = await this.getOrCreateJob();
-    if (job.isRunning && job.pendingPosts.length > 0) {
-      return job.pendingPosts.shift();
-    }
-    return null;
-  }
-
-  // ✅ الحصول على حالة المهمة
-  async getJobStatus() {
     const job = await this.getOrCreateJob();
+    if (!job.isRunning) {
+      console.log('⏳ Job is not running');
+      return null;
+    }
+
+    if (job.completedCount >= job.totalTarget) {
+      console.log('✅ Job completed');
+      job.isRunning = false;
+      await job.save();
+      return null;
+    }
+
+    // جلب منشور تالٍ
+    let postUrl = null;
+    if (job.pendingPosts.length > 0) {
+      postUrl = job.pendingPosts.shift();
+    } else {
+      // اكتشاف منشورات جديدة
+      const activeAccount = await cookieManagerService.getValidActiveAccount();
+      if (activeAccount && activeAccount.cookies) {
+        const posts = await facebookService.discoverPendingPosts(
+          activeAccount.cookies,
+          job.groupUrl,
+          job.visitedPosts
+        );
+        if (posts && posts.length > 0) {
+          job.pendingPosts = posts;
+          postUrl = job.pendingPosts.shift();
+        }
+      }
+    }
+
+    if (!postUrl) {
+      console.log('⏳ No posts available');
+      return null;
+    }
+
+    await job.save();
+
     return {
-      isRunning: job.isRunning,
-      completedCount: job.completedCount,
-      totalTarget: job.totalTarget,
-      groupUrl: job.groupUrl,
-      customHashtag: job.customHashtag,
-      pendingCount: job.pendingPosts.length,
-      visitedCount: job.visitedPosts.length
+      identity,
+      postUrl,
+      job
     };
+  }
+
+  // =========================================================
+  // ✅ EXECUTE NEXT TASK
+  // =========================================================
+
+  async executeNextTask() {
+    try {
+      const target = await this.getNextTarget();
+      if (!target) {
+        return;
+      }
+
+      const { identity, postUrl, job } = target;
+      console.log(`🎯 Target: ${identity.type} ${identity.accountName} - Post: ${postUrl}`);
+
+      // جلب نص المنشور
+      let postText;
+      try {
+        postText = await facebookService.fetchPostText(identity.cookies, postUrl);
+      } catch (error) {
+        console.error(`❌ Failed to fetch post text: ${error.message}`);
+        // محاولة مع حساب آخر
+        const fallbackAccount = await cookieManagerService.getValidActiveAccount();
+        if (fallbackAccount && fallbackAccount.cookies) {
+          postText = await facebookService.fetchPostText(fallbackAccount.cookies, postUrl);
+        } else {
+          postText = 'منشور تفاعلي';
+        }
+      }
+
+      // توليد تعليق
+      const aiComment = await geminiService.generateSmartComment(
+        postText,
+        process.env.GEMINI_API_KEY
+      );
+
+      // التعليق حسب نوع الهوية
+      let success = false;
+      try {
+        if (identity.type === 'page') {
+          success = await facebookService.submitCommentAsPage(
+            identity.cookies,
+            postUrl,
+            aiComment,
+            identity.pageId
+          );
+        } else {
+          success = await facebookService.submitDualComments(
+            identity.cookies,
+            postUrl,
+            aiComment,
+            job.customHashtag
+          );
+        }
+      } catch (error) {
+        console.error(`❌ Comment submission failed: ${error.message}`);
+        // إذا فشل، حاول التعليق كحساب شخصي عادي
+        if (identity.type === 'page') {
+          const fallback = await cookieManagerService.getValidActiveAccount();
+          if (fallback && fallback.cookies) {
+            success = await facebookService.submitDualComments(
+              fallback.cookies,
+              postUrl,
+              aiComment,
+              job.customHashtag
+            );
+          }
+        }
+      }
+
+      if (success) {
+        // تحديث الإحصائيات
+        await cookieManagerService.updateIdentityUsage(identity);
+        job.visitedPosts.push(postUrl);
+        job.completedCount += 1;
+        await job.save();
+
+        // ضبط كولداون حسب نوع الهوية
+        const cooldownMinutes = identity.type === 'page' ? 5 : 10;
+        await cookieManagerService.setCooldown(identity, cooldownMinutes);
+
+        console.log(`🎉 [${job.completedCount}/${job.totalTarget}] ${identity.type === 'page' ? '📄' : '👤'} ${identity.accountName}${identity.pageName ? ' - ' + identity.pageName : ''} commented on: ${postUrl}`);
+      } else {
+        console.error(`❌ Failed to comment on: ${postUrl}`);
+        // إعادة المنشور إلى القائمة
+        if (!job.pendingPosts.includes(postUrl)) {
+          job.pendingPosts.push(postUrl);
+          await job.save();
+        }
+      }
+
+    } catch (error) {
+      console.error(`❌ executeNextTask error: ${error.message}`);
+    }
+  }
+
+  // =========================================================
+  // ✅ RUN CONTINUOUSLY
+  // =========================================================
+
+  async runLoop() {
+    console.log('🔄 Job service running...');
+    while (true) {
+      try {
+        await this.executeNextTask();
+      } catch (error) {
+        console.error(`❌ Loop error: ${error.message}`);
+      }
+      // انتظار بين المهام
+      await new Promise(resolve => setTimeout(resolve, 15000));
+    }
   }
 }
 
