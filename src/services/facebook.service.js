@@ -1,37 +1,34 @@
 // src/services/facebook.service.js
-const puppeteer = require('puppeteer-core');
+const puppeteer = require('puppeteer');
 
 class FacebookService {
   async _launchBrowser() {
-    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
+    console.log('🔍 Launching browser...');
     
-    console.log(`🔍 Launching browser with: ${executablePath}`);
-    
+    // ✅ استخدام Puppeteer العادي مع تنزيل Chrome تلقائياً
     return await puppeteer.launch({
-      headless: true,
-      executablePath: executablePath,
+      headless: 'new',  // ✅ استخدام الوضع الجديد لـ headless
       protocolTimeout: 60000,
+      timeout: 60000,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',  // ✅ مهم جداً للذاكرة المحدودة
+        '--disable-dev-shm-usage',
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
         '--no-zygote',
         '--disable-gpu',
-        '--single-process',         // ✅ يقلل استهلاك الذاكرة
+        '--single-process',
         '--disable-extensions',
         '--disable-web-security',
         '--disable-features=IsolateOrigins,site-per-process',
         '--js-flags="--max-old-space-size=128"',
-        // ✅ إضافات جديدة لتقليل الذاكرة
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
-        '--disable-ipc-flooding-protection',
-        '--max_old_space_size=128'
+        '--max_old_space_size=128',
+        '--disable-ipc-flooding-protection'
       ],
-      // ✅ إعدادات إضافية
       defaultViewport: null,
       ignoreDefaultArgs: ['--disable-extensions'],
       handleSIGINT: false,
@@ -43,7 +40,7 @@ class FacebookService {
   async _createCleanPage(browser, rawCookies) {
     const page = await browser.newPage();
     
-    // ✅ تعطيل كل ما يستهلك ذاكرة
+    // تعطيل تحميل الصور والوسائط
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const type = req.resourceType();
@@ -54,12 +51,8 @@ class FacebookService {
       }
     });
 
-    // ✅ تقليل وقت الانتظار
-    page.setDefaultNavigationTimeout(20000);
-    page.setDefaultTimeout(15000);
-
-    // ✅ تعطيل JavaScript غير الضروري
-    await page.setJavaScriptEnabled(true);
+    page.setDefaultNavigationTimeout(25000);
+    page.setDefaultTimeout(20000);
 
     // إعداد الكوكيز
     if (rawCookies && Array.isArray(rawCookies)) {
@@ -80,19 +73,24 @@ class FacebookService {
   async discoverPendingPosts(rawCookies, groupUrl, visitedPosts = []) {
     let browser = null;
     try {
-      console.log(`🌐 Starting browser for discovery...`);
+      console.log('🌐 Starting browser for discovery...');
       browser = await this._launchBrowser();
+      
+      // ✅ التحقق من أن المتصفح مفتوح
+      if (!browser || !browser.isConnected()) {
+        throw new Error('Browser failed to launch');
+      }
       
       const page = await this._createCleanPage(browser, rawCookies);
       
       console.log(`🌐 Navigating to: ${groupUrl}`);
       await page.goto(groupUrl, { 
         waitUntil: 'domcontentloaded', 
-        timeout: 20000 
+        timeout: 25000 
       });
 
-      // ✅ انتظار قصير لتحميل المحتوى
-      await page.waitForTimeout(2000);
+      // ✅ انتظار تحميل الصفحة
+      await page.waitForSelector('a', { timeout: 10000 });
 
       const extractedLinks = await page.$$eval('a', anchors => {
         return anchors
@@ -105,7 +103,7 @@ class FacebookService {
 
       console.log(`📝 Found ${newPosts.length} new posts`);
       
-      // ✅ إغلاق الصفحة قبل إغلاق المتصفح
+      // ✅ إغلاق آمن
       await page.close().catch(() => {});
       
       return newPosts;
@@ -116,7 +114,7 @@ class FacebookService {
       if (browser) {
         try {
           await browser.close();
-          console.log('🔒 Browser closed successfully');
+          console.log('🔒 Browser closed');
         } catch (e) {
           console.log('⚠️ Error closing browser:', e.message);
         }
@@ -132,10 +130,10 @@ class FacebookService {
       
       await page.goto(postUrl, { 
         waitUntil: 'domcontentloaded', 
-        timeout: 20000 
+        timeout: 25000 
       });
 
-      await page.waitForTimeout(1500);
+      await page.waitForSelector('p, article, div', { timeout: 10000 });
 
       const postText = await page.evaluate(() => {
         const elements = Array.from(document.querySelectorAll('p, article, div, span'));
@@ -167,12 +165,11 @@ class FacebookService {
       
       await page.goto(postUrl, { 
         waitUntil: 'domcontentloaded', 
-        timeout: 20000 
+        timeout: 25000 
       });
 
-      // كتابة التعليق الأول (AI)
       const selector = 'textarea[name="comment_text"], textarea';
-      await page.waitForSelector(selector, { timeout: 10000 });
+      await page.waitForSelector(selector, { timeout: 15000 });
 
       await page.type(selector, aiComment, { delay: 20 });
       const submitBtn = 'input[type="submit"][name="post"], input[type="submit"]';
@@ -182,11 +179,9 @@ class FacebookService {
         page.click(submitBtn)
       ]);
 
-      // انتظار 8 ثواني بين التعليقات
       await new Promise(resolve => setTimeout(resolve, 8000));
 
-      // كتابة التعليق الثاني (الهاشتاج)
-      await page.waitForSelector(selector, { timeout: 10000 });
+      await page.waitForSelector(selector, { timeout: 15000 });
       await page.type(selector, hashtag, { delay: 20 });
       await Promise.all([
         page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
