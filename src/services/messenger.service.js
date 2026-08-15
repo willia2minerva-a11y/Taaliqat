@@ -1,33 +1,86 @@
-// src/services/messenger.service.js
 const axios = require('axios');
 const config = require('../config');
 
 class MessengerService {
+
   async sendTextMessage(recipientId, text) {
-    const accessToken = config.pageAccessToken || process.env.PAGE_ACCESS_TOKEN;
-    
-    if (!accessToken) {
-      console.warn('⚠️ PAGE_ACCESS_TOKEN is not configured.');
-      return;
+    const token =
+      config.pageAccessToken ||
+      process.env.PAGE_ACCESS_TOKEN;
+
+    if (!token) {
+      throw new Error('PAGE_ACCESS_TOKEN is missing');
     }
 
+    if (!recipientId) {
+      throw new Error('Recipient ID is missing');
+    }
+
+    const message = String(text || '').trim();
+
+    if (!message) {
+      throw new Error('Message text is empty');
+    }
+
+    const version =
+      process.env.META_GRAPH_VERSION || 'v19.0';
+
+    const url =
+      `https://graph.facebook.com/${version}/me/messages`;
+
+    console.log(
+      `[MESSENGER] 📤 Sending to ${recipientId}: ${message.slice(0, 80)}`
+    );
+
     try {
-      console.log(`📤 Sending message to ${recipientId}: ${text.substring(0, 50)}...`);
-      
       const response = await axios.post(
-        `https://graph.facebook.com/v19.0/me/messages?access_token=${accessToken}`,
+        url,
         {
           recipient: { id: recipientId },
-          message: { text: text },
+          message: { text: message },
           messaging_type: 'RESPONSE'
+        },
+        {
+          params: {
+            access_token: token
+          },
+          timeout: 15000
         }
       );
 
-      console.log(`✅ Message sent successfully to ${recipientId}`);
+      console.log(
+        `[MESSENGER] ✅ Sent | recipient=${recipientId} | message_id=${response.data?.message_id || 'UNKNOWN'}`
+      );
+
       return response.data;
+
     } catch (error) {
-      console.error(`❌ Messenger Send Error: ${error.response?.data?.error?.message || error.message}`);
-      throw new Error(`Failed to send message: ${error.response?.data?.error?.message || error.message}`);
+      const apiError =
+        error.response?.data?.error;
+
+      console.error(
+        '[MESSENGER] ❌ SEND FAILED'
+      );
+
+      console.error(
+        `[MESSENGER] Status: ${error.response?.status || 'NO_RESPONSE'}`
+      );
+
+      console.error(
+        `[MESSENGER] Type: ${apiError?.type || 'UNKNOWN'}`
+      );
+
+      console.error(
+        `[MESSENGER] Code: ${apiError?.code || 'UNKNOWN'}`
+      );
+
+      console.error(
+        `[MESSENGER] Message: ${apiError?.message || error.message}`
+      );
+
+      throw new Error(
+        `MESSENGER_SEND_ERROR: ${apiError?.message || error.message}`
+      );
     }
   }
 }
