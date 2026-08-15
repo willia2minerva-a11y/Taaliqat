@@ -3,9 +3,13 @@
 const Cookie = require('../models/Cookie');
 
 class CookieManagerService {
-  constructor() {
-    // Facebook cookies المطلوبة لتسجيل الدخول
-    this.requiredCookies = [
+
+  // =========================================================
+  // REQUIRED FACEBOOK COOKIES
+  // =========================================================
+
+  _getRequiredCookies() {
+    return [
       'datr',
       'fr',
       'c_user',
@@ -14,241 +18,111 @@ class CookieManagerService {
   }
 
   // =========================================================
-  // LOG
+  // NORMALIZE ACCOUNT NAME
   // =========================================================
 
-  _log(message) {
-    console.log(
-      `[COOKIE-MANAGER] ${message}`
-    );
-  }
-
-  _warn(message) {
-    console.warn(
-      `[COOKIE-MANAGER][WARN] ${message}`
-    );
-  }
-
-  _error(message) {
-    console.error(
-      `[COOKIE-MANAGER][ERROR] ${message}`
-    );
-  }
-
-  // =========================================================
-  // Normalize cookie input
-  //
-  // Supports:
-  // - Array
-  // - JSON string
-  // - object containing cookies
-  // =========================================================
-
-  normalizeCookies(input) {
-    let cookies = input;
-
-    // -------------------------------------------------------
-    // JSON string
-    // -------------------------------------------------------
-
-    if (typeof cookies === 'string') {
-      try {
-        cookies = JSON.parse(cookies);
-      } catch {
-        return [];
-      }
-    }
-
-    // -------------------------------------------------------
-    // Object wrappers
-    // -------------------------------------------------------
-
+  _getAccountName(doc) {
     if (
-      cookies &&
-      !Array.isArray(cookies) &&
-      typeof cookies === 'object'
+      doc &&
+      doc.accountName &&
+      String(doc.accountName).trim()
     ) {
-      if (Array.isArray(cookies.cookies)) {
-        cookies = cookies.cookies;
-      } else if (
-        Array.isArray(cookies.data)
-      ) {
-        cookies = cookies.data;
-      } else {
-        cookies = [];
-      }
+      return String(
+        doc.accountName
+      ).trim();
     }
 
+    return 'UNKNOWN';
+  }
+
+  // =========================================================
+  // GET COOKIE NAMES
+  // =========================================================
+
+  _getCookieNames(cookies) {
     if (!Array.isArray(cookies)) {
       return [];
     }
 
-    // -------------------------------------------------------
-    // Normalize each cookie
-    // -------------------------------------------------------
-
-    const result = [];
-
-    for (const cookie of cookies) {
-      if (!cookie || typeof cookie !== 'object') {
-        continue;
-      }
-
-      if (!cookie.name) {
-        continue;
-      }
-
-      if (
-        cookie.value === undefined ||
-        cookie.value === null
-      ) {
-        continue;
-      }
-
-      result.push({
-        name: String(cookie.name).trim(),
-        value: String(cookie.value),
-
-        domain:
-          cookie.domain ||
-          '.facebook.com',
-
-        path:
-          cookie.path ||
-          '/',
-
-        secure:
-          cookie.secure !== false,
-
-        httpOnly:
-          Boolean(cookie.httpOnly),
-
-        ...(cookie.sameSite
-          ? {
-              sameSite:
-                this._normalizeSameSite(
-                  cookie.sameSite
-                )
-            }
-          : {}),
-
-        ...(cookie.expires !== undefined &&
-        cookie.expires !== null &&
-        Number(cookie.expires) > 0
-          ? {
-              expires:
-                Number(cookie.expires)
-            }
-          : {})
-      });
-    }
-
-    return result;
+    return cookies
+      .filter(cookie => cookie && cookie.name)
+      .map(cookie => String(cookie.name));
   }
 
   // =========================================================
-  // SameSite normalization
-  // =========================================================
-
-  _normalizeSameSite(value) {
-    const valueLower =
-      String(value)
-        .toLowerCase()
-        .trim();
-
-    if (valueLower === 'strict') {
-      return 'Strict';
-    }
-
-    if (valueLower === 'none') {
-      return 'None';
-    }
-
-    return 'Lax';
-  }
-
-  // =========================================================
-  // Get cookie names
-  // =========================================================
-
-  getCookieNames(cookies) {
-    if (!Array.isArray(cookies)) {
-      return [];
-    }
-
-    return [
-      ...new Set(
-        cookies
-          .filter(c => c && c.name)
-          .map(c =>
-            String(c.name).trim()
-          )
-      )
-    ];
-  }
-
-  // =========================================================
-  // Validate cookie account
+  // VALIDATE COOKIE STRUCTURE
   // =========================================================
 
   validateCookiesDetailed(cookies) {
-    const normalized =
-      this.normalizeCookies(cookies);
+
+    const required =
+      this._getRequiredCookies();
 
     // -------------------------------------------------------
     // Empty
     // -------------------------------------------------------
 
-    if (normalized.length === 0) {
+    if (!Array.isArray(cookies)) {
+      return {
+        valid: false,
+        reason: 'COOKIES_NOT_ARRAY',
+        missing: required,
+        count: 0
+      };
+    }
+
+    if (cookies.length === 0) {
       return {
         valid: false,
         reason: 'COOKIES_EMPTY',
-        cookieCount: 0,
-        cookieNames: [],
-        missing: [
-          ...this.requiredCookies
-        ],
-        cookies: []
+        missing: required,
+        count: 0
       };
     }
 
     // -------------------------------------------------------
-    // Names
+    // Build valid names
     // -------------------------------------------------------
 
     const names =
-      this.getCookieNames(
-        normalized
+      new Set();
+
+    for (const cookie of cookies) {
+
+      if (!cookie) {
+        continue;
+      }
+
+      if (
+        !cookie.name ||
+        cookie.value === undefined ||
+        cookie.value === null ||
+        String(cookie.value).trim() === ''
+      ) {
+        continue;
+      }
+
+      names.add(
+        String(cookie.name).trim()
       );
+    }
 
     const missing =
-      this.requiredCookies.filter(
-        required =>
-          !normalized.some(
-            cookie =>
-              cookie.name ===
-                required &&
-              String(
-                cookie.value || ''
-              ).trim() !== ''
-          )
+      required.filter(
+        name => !names.has(name)
       );
 
     // -------------------------------------------------------
-    // Missing required cookies
+    // Missing required
     // -------------------------------------------------------
 
     if (missing.length > 0) {
       return {
         valid: false,
-        reason:
-          'COOKIES_MISSING_REQUIRED',
-        cookieCount:
-          normalized.length,
-        cookieNames:
-          names,
+        reason: 'COOKIES_MISSING_REQUIRED',
         missing,
-        cookies: normalized
+        count: cookies.length,
+        names: [...names]
       };
     }
 
@@ -259,20 +133,18 @@ class CookieManagerService {
     return {
       valid: true,
       reason: 'VALID',
-      cookieCount:
-        normalized.length,
-      cookieNames:
-        names,
       missing: [],
-      cookies: normalized
+      count: cookies.length,
+      names: [...names]
     };
   }
 
   // =========================================================
-  // Validate simple
+  // SIMPLE VALIDATE
   // =========================================================
 
   async validateCookies(cookies) {
+
     const result =
       this.validateCookiesDetailed(
         cookies
@@ -282,26 +154,29 @@ class CookieManagerService {
   }
 
   // =========================================================
-  // Get all accounts
+  // GET ALL COOKIES
   // =========================================================
 
   async getAllCookies() {
+
     try {
+
       const accounts =
         await Cookie.find({})
           .sort({
             lastUsedAt: 1
           });
 
-      this._log(
-        `📊 Found ${accounts.length} cookie account(s)`
+      console.log(
+        `[COOKIE-MANAGER] 📊 Found ${accounts.length} cookie account(s)`
       );
 
       return accounts;
 
     } catch (error) {
-      this._error(
-        `Failed to load cookie accounts: ${error.message}`
+
+      console.error(
+        `[COOKIE-MANAGER][ERROR] ❌ Failed to load accounts: ${error.message}`
       );
 
       return [];
@@ -309,338 +184,525 @@ class CookieManagerService {
   }
 
   // =========================================================
-  // Get all active accounts
+  // PRINT ACCOUNT DIAGNOSTICS
   // =========================================================
 
-  async getActiveAccounts() {
+  _printAccountDiagnostic(
+    account,
+    validation
+  ) {
+
+    const accountName =
+      this._getAccountName(account);
+
+    const cookies =
+      Array.isArray(account?.cookies)
+        ? account.cookies
+        : [];
+
+    const names =
+      this._getCookieNames(
+        cookies
+      );
+
+    console.log(
+      '-----------------------------------------------'
+    );
+
+    console.log(
+      `👤 ACCOUNT: ${accountName}`
+    );
+
+    console.log(
+      `   STATUS: ${account?.status || 'UNKNOWN'}`
+    );
+
+    console.log(
+      `   COOKIE COUNT: ${cookies.length}`
+    );
+
+    console.log(
+      `   COOKIE NAMES: ${
+        names.length
+          ? names.join(', ')
+          : '[NONE]'
+      }`
+    );
+
+    console.log(
+      `   VALID STRUCTURE: ${validation.valid}`
+    );
+
+    console.log(
+      `   REASON: ${validation.reason}`
+    );
+
+    if (
+      validation.missing &&
+      validation.missing.length > 0
+    ) {
+      console.log(
+        `   MISSING: ${validation.missing.join(', ')}`
+      );
+    }
+
+    console.log(
+      `   LAST USED: ${
+        account?.lastUsedAt
+          ? account.lastUsedAt.toString()
+          : 'NEVER'
+      }`
+    );
+
+    if (account?.lastError) {
+      console.log(
+        `   LAST ERROR: ${account.lastError}`
+      );
+    }
+  }
+
+  // =========================================================
+  // CLEAN INVALID DATABASE ACCOUNTS
+  // =========================================================
+
+  async cleanupInvalidAccounts() {
+
     try {
+
       const accounts =
-        await Cookie.find({
-          status: 'ACTIVE'
-        }).sort({
-          lastUsedAt: 1
-        });
+        await Cookie.find({});
 
-      this._log(
-        `📊 Found ${accounts.length} ACTIVE account(s)`
-      );
+      let deleted = 0;
 
-      return accounts;
+      for (const account of accounts) {
+
+        const accountName =
+          this._getAccountName(
+            account
+          );
+
+        // ---------------------------------------------------
+        // Missing account name
+        // ---------------------------------------------------
+
+        if (
+          !account.accountName ||
+          !String(account.accountName).trim()
+        ) {
+
+          console.warn(
+            `[COOKIE-MANAGER][WARN] ⚠️ Removing account with missing accountName`
+          );
+
+          await Cookie.deleteOne({
+            _id: account._id
+          });
+
+          deleted++;
+
+          continue;
+        }
+
+        // ---------------------------------------------------
+        // Empty cookies
+        // ---------------------------------------------------
+
+        const cookies =
+          Array.isArray(account.cookies)
+            ? account.cookies
+            : [];
+
+        if (
+          cookies.length === 0
+        ) {
+
+          console.warn(
+            `[COOKIE-MANAGER][WARN] ⚠️ Removing "${accountName}" because cookie array is empty`
+          );
+
+          await Cookie.deleteOne({
+            _id: account._id
+          });
+
+          deleted++;
+
+          continue;
+        }
+      }
+
+      if (deleted > 0) {
+
+        console.log(
+          `[COOKIE-MANAGER] 🧹 Removed ${deleted} invalid account(s)`
+        );
+      }
+
+      return deleted;
 
     } catch (error) {
-      this._error(
-        `Failed to load ACTIVE accounts: ${error.message}`
+
+      console.error(
+        `[COOKIE-MANAGER][ERROR] ❌ Cleanup failed: ${error.message}`
       );
 
-      return [];
+      return 0;
     }
   }
 
   // =========================================================
-  // Find valid active Facebook account
+  // GET VALID ACTIVE ACCOUNT
   // =========================================================
 
   async getValidActiveAccount() {
-    this._log(
-      '🔍 Searching for a valid ACTIVE Facebook account...'
+
+    console.log(
+      '[COOKIE-MANAGER] 🔍 Searching for a valid ACTIVE Facebook account...'
     );
 
-    const accounts =
-      await this.getActiveAccounts();
+    try {
 
-    if (accounts.length === 0) {
-      this._warn(
-        '⚠️ No ACTIVE Facebook accounts found'
+      const accounts =
+        await Cookie.find({
+          status: 'ACTIVE'
+        })
+        .sort({
+          lastUsedAt: 1
+        });
+
+      console.log(
+        `[COOKIE-MANAGER] 📊 Found ${accounts.length} ACTIVE account(s)`
+      );
+
+      if (
+        accounts.length === 0
+      ) {
+
+        console.warn(
+          '[COOKIE-MANAGER][WARN] ⚠️ No ACTIVE Facebook accounts'
+        );
+
+        return null;
+      }
+
+      for (
+        const account
+        of accounts
+      ) {
+
+        const accountName =
+          this._getAccountName(
+            account
+          );
+
+        const validation =
+          this.validateCookiesDetailed(
+            account.cookies
+          );
+
+        this._printAccountDiagnostic(
+          account,
+          validation
+        );
+
+        // ---------------------------------------------------
+        // INVALID COOKIE STRUCTURE
+        // ---------------------------------------------------
+
+        if (!validation.valid) {
+
+          console.warn(
+            `[COOKIE-MANAGER][WARN] ⚠️ Skipping "${accountName}": ${validation.reason}`
+          );
+
+          if (
+            validation.missing &&
+            validation.missing.length > 0
+          ) {
+
+            console.warn(
+              `[COOKIE-MANAGER][WARN] ⚠️ Missing: ${validation.missing.join(', ')}`
+            );
+          }
+
+          // -------------------------------------------------
+          // Empty / corrupted account
+          //
+          // Delete it completely.
+          // -------------------------------------------------
+
+          if (
+            validation.reason ===
+              'COOKIES_EMPTY' ||
+            validation.reason ===
+              'COOKIES_NOT_ARRAY'
+          ) {
+
+            console.warn(
+              `[COOKIE-MANAGER] 🗑️ Deleting invalid account "${accountName}"`
+            );
+
+            await Cookie.deleteOne({
+              _id: account._id
+            });
+
+          } else {
+
+            // ------------------------------------------------
+            // Cookie exists but incomplete.
+            //
+            // Do NOT stop the worker.
+            // Mark it EXPIRED so it will be skipped.
+            // ------------------------------------------------
+
+            account.status =
+              'EXPIRED';
+
+            account.lastError =
+              `Invalid cookie set: ${validation.reason}${
+                validation.missing?.length
+                  ? ` | Missing: ${validation.missing.join(', ')}`
+                  : ''
+              }`;
+
+            account.lastCheckedAt =
+              new Date();
+
+            await account.save();
+
+            console.warn(
+              `[COOKIE-MANAGER] ⚠️ Account "${accountName}" marked EXPIRED and skipped`
+            );
+          }
+
+          // Move to next account
+          continue;
+        }
+
+        // ---------------------------------------------------
+        // VALID ACCOUNT
+        // ---------------------------------------------------
+
+        console.log(
+          `[COOKIE-MANAGER] ✅ VALID ACCOUNT FOUND: "${accountName}"`
+        );
+
+        console.log(
+          `[COOKIE-MANAGER] 🍪 Cookie count: ${validation.count}`
+        );
+
+        return account;
+      }
+
+      // -----------------------------------------------------
+      // No valid account
+      // -----------------------------------------------------
+
+      console.warn(
+        '[COOKIE-MANAGER][WARN] ⚠️ No valid ACTIVE cookie account remains'
+      );
+
+      return null;
+
+    } catch (error) {
+
+      console.error(
+        `[COOKIE-MANAGER][ERROR] ❌ Error searching cookie accounts: ${error.message}`
       );
 
       return null;
     }
-
-    const diagnostics = [];
-
-    for (const account of accounts) {
-      // -----------------------------------------------------
-      // Never display undefined
-      // -----------------------------------------------------
-
-      const accountName =
-        account.accountName &&
-        String(account.accountName).trim()
-          ? String(
-              account.accountName
-            ).trim()
-          : 'UNKNOWN';
-
-      const validation =
-        this.validateCookiesDetailed(
-          account.cookies
-        );
-
-      this._log(
-        `👤 Account="${accountName}" | ` +
-        `STATUS=${account.status} | ` +
-        `COOKIE_COUNT=${validation.cookieCount} | ` +
-        `VALID=${validation.valid} | ` +
-        `REASON=${validation.reason}`
-      );
-
-      if (validation.cookieNames.length > 0) {
-        this._log(
-          `   🍪 Cookies: ${validation.cookieNames.join(', ')}`
-        );
-      }
-
-      if (
-        validation.missing &&
-        validation.missing.length > 0
-      ) {
-        this._log(
-          `   ❌ Missing: ${validation.missing.join(', ')}`
-        );
-      }
-
-      // -----------------------------------------------------
-      // Invalid account
-      // -----------------------------------------------------
-
-      if (!validation.valid) {
-        diagnostics.push({
-          accountName,
-          status:
-            account.status,
-          ...validation,
-          lastUsedAt:
-            account.lastUsedAt
-        });
-
-        this._warn(
-          `⚠️ Skipping account "${accountName}": ${this._getReasonText(
-            accountName,
-            validation
-          )}`
-        );
-
-        continue;
-      }
-
-      // -----------------------------------------------------
-      // Valid account
-      // -----------------------------------------------------
-
-      this._log(
-        `✅ VALID Facebook account selected: "${accountName}"`
-      );
-
-      return {
-        document: account,
-
-        accountName,
-
-        cookies:
-          validation.cookies,
-
-        validation
-      };
-    }
-
-    // -------------------------------------------------------
-    // No valid account
-    // -------------------------------------------------------
-
-    this._error(
-      '❌ ACTIVE accounts exist, but none contains a valid Facebook cookie set'
-    );
-
-    this.printDiagnostics(
-      diagnostics
-    );
-
-    return null;
   }
 
   // =========================================================
-  // Reason text
+  // GET VALID ACTIVE COOKIES
   // =========================================================
 
-  _getReasonText(
-    accountName,
-    validation
+  async getActiveCookies() {
+
+    const account =
+      await this.getValidActiveAccount();
+
+    if (!account) {
+      return null;
+    }
+
+    return account.cookies;
+  }
+
+  // =========================================================
+  // MARK ACCOUNT EXPIRED
+  // =========================================================
+
+  async markExpired(
+    accountId,
+    reason = 'Facebook cookies expired'
   ) {
-    if (
-      validation.reason ===
-      'COOKIES_EMPTY'
-    ) {
-      return `Account "${accountName}" is ACTIVE but cookie array is empty`;
-    }
 
-    if (
-      validation.reason ===
-      'COOKIES_MISSING_REQUIRED'
-    ) {
-      return (
-        `Account "${accountName}" is missing required cookies: ` +
-        validation.missing.join(', ')
-      );
-    }
+    try {
 
-    return `Account "${accountName}" has invalid cookies`;
-  }
-
-  // =========================================================
-  // Print diagnostics
-  // =========================================================
-
-  printDiagnostics(
-    diagnostics
-  ) {
-    console.log(
-      '\n========== COOKIE ACCOUNT DIAGNOSTICS =========='
-    );
-
-    if (
-      !diagnostics ||
-      diagnostics.length === 0
-    ) {
-      console.log(
-        'No account diagnostics available.'
-      );
-    }
-
-    for (
-      const diagnostic
-      of diagnostics
-    ) {
-      console.log(
-        `👤 ACCOUNT: ${diagnostic.accountName}`
-      );
-
-      console.log(
-        `   STATUS: ${diagnostic.status}`
-      );
-
-      console.log(
-        `   COOKIE COUNT: ${diagnostic.cookieCount}`
-      );
-
-      console.log(
-        `   COOKIE NAMES: ${
-          diagnostic.cookieNames.length
-            ? diagnostic.cookieNames.join(', ')
-            : '[NONE]'
-        }`
-      );
-
-      console.log(
-        `   VALID STRUCTURE: ${diagnostic.valid}`
-      );
-
-      console.log(
-        `   REASON: ${diagnostic.reason}`
-      );
-
-      if (
-        diagnostic.missing &&
-        diagnostic.missing.length
-      ) {
-        console.log(
-          `   MISSING: ${diagnostic.missing.join(', ')}`
+      const account =
+        await Cookie.findById(
+          accountId
         );
+
+      if (!account) {
+        return null;
       }
 
-      console.log(
-        `   LAST USED: ${
-          diagnostic.lastUsedAt
-            ? diagnostic.lastUsedAt
-            : 'NEVER'
-        }`
+      account.status =
+        'EXPIRED';
+
+      account.lastError =
+        String(reason);
+
+      account.lastCheckedAt =
+        new Date();
+
+      await account.save();
+
+      console.warn(
+        `[COOKIE-MANAGER] 🟠 Account "${this._getAccountName(account)}" marked EXPIRED`
       );
 
-      console.log(
-        '-----------------------------------------------'
+      console.warn(
+        `[COOKIE-MANAGER] Reason: ${reason}`
       );
+
+      return account;
+
+    } catch (error) {
+
+      console.error(
+        `[COOKIE-MANAGER][ERROR] ❌ markExpired failed: ${error.message}`
+      );
+
+      return null;
     }
-
-    console.log(
-      '=================================================\n'
-    );
   }
 
   // =========================================================
-  // Add / update cookies
+  // MARK ACCOUNT BLOCKED
+  // =========================================================
+
+  async markBlocked(
+    accountId,
+    reason = 'Facebook account blocked'
+  ) {
+
+    try {
+
+      const account =
+        await Cookie.findById(
+          accountId
+        );
+
+      if (!account) {
+        return null;
+      }
+
+      account.status =
+        'BLOCKED';
+
+      account.lastError =
+        String(reason);
+
+      account.lastCheckedAt =
+        new Date();
+
+      account.cooldownUntil =
+        new Date(
+          Date.now() +
+          30 * 60 * 1000
+        );
+
+      await account.save();
+
+      console.warn(
+        `[COOKIE-MANAGER] 🔴 Account "${this._getAccountName(account)}" marked BLOCKED`
+      );
+
+      console.warn(
+        `[COOKIE-MANAGER] Reason: ${reason}`
+      );
+
+      return account;
+
+    } catch (error) {
+
+      console.error(
+        `[COOKIE-MANAGER][ERROR] ❌ markBlocked failed: ${error.message}`
+      );
+
+      return null;
+    }
+  }
+
+  // =========================================================
+  // UPDATE USAGE
+  // =========================================================
+
+  async updateCookieUsage(
+    cookieId
+  ) {
+
+    try {
+
+      await Cookie.findByIdAndUpdate(
+        cookieId,
+        {
+          lastUsedAt: new Date(),
+          lastCheckedAt: new Date()
+        }
+      );
+
+    } catch (error) {
+
+      console.error(
+        `[COOKIE-MANAGER][ERROR] ❌ Failed to update usage: ${error.message}`
+      );
+    }
+  }
+
+  // =========================================================
+  // ADD / UPDATE COOKIES
   // =========================================================
 
   async addCookies(
     accountName,
     cookies
   ) {
-    try {
-      const cleanName =
-        String(
-          accountName || ''
-        ).trim();
 
-      // -----------------------------------------------------
-      // Account name validation
-      // -----------------------------------------------------
+    if (
+      !accountName ||
+      !String(accountName).trim()
+    ) {
+      throw new Error(
+        'ACCOUNT_NAME_ERROR: accountName is required'
+      );
+    }
 
-      if (
-        !cleanName ||
-        cleanName.toLowerCase() ===
-          'undefined' ||
-        cleanName.toLowerCase() ===
-          'null'
-      ) {
-        throw new Error(
-          'COOKIE_IMPORT_ERROR: accountName is required'
-        );
-      }
-
-      // -----------------------------------------------------
-      // Normalize
-      // -----------------------------------------------------
-
-      const normalized =
-        this.normalizeCookies(
-          cookies
-        );
-
-      // -----------------------------------------------------
-      // Detailed validation
-      // -----------------------------------------------------
-
-      const validation =
-        this.validateCookiesDetailed(
-          normalized
-        );
-
-      this._log(
-        `🍪 Importing cookies for account "${cleanName}"`
+    const validation =
+      this.validateCookiesDetailed(
+        cookies
       );
 
-      this._log(
-        `   COOKIE_COUNT=${validation.cookieCount}`
-      );
+    if (!validation.valid) {
 
-      this._log(
-        `   COOKIE_NAMES=${
-          validation.cookieNames.join(', ') ||
-          '[NONE]'
+      throw new Error(
+        `COOKIE_ERROR: Invalid cookie set: ${validation.reason}${
+          validation.missing?.length
+            ? ` | Missing: ${validation.missing.join(', ')}`
+            : ''
         }`
       );
+    }
 
-      // -----------------------------------------------------
-      // NEVER save incomplete Facebook cookies as ACTIVE
-      // -----------------------------------------------------
+    const cleanName =
+      String(
+        accountName
+      ).trim();
 
-      if (!validation.valid) {
-        throw new Error(
-          `COOKIE_IMPORT_ERROR: Invalid Facebook cookie set. Reason=${validation.reason}. Missing=${validation.missing.join(', ')}`
-        );
-      }
-
-      // -----------------------------------------------------
-      // Existing
-      // -----------------------------------------------------
+    try {
 
       let existing =
         await Cookie.findOne({
@@ -648,58 +710,54 @@ class CookieManagerService {
         });
 
       if (existing) {
+
         existing.cookies =
-          validation.cookies;
+          cookies;
 
         existing.status =
           'ACTIVE';
 
+        existing.lastError =
+          null;
+
         existing.cooldownUntil =
           null;
+
+        existing.lastCheckedAt =
+          new Date();
 
         existing.lastUsedAt =
           new Date();
 
         await existing.save();
 
-        this._log(
-          `✅ Cookies updated successfully for "${cleanName}"`
+        console.log(
+          `[COOKIE-MANAGER] ✅ Cookies updated: "${cleanName}"`
         );
 
         return existing;
       }
 
-      // -----------------------------------------------------
-      // New account
-      // -----------------------------------------------------
-
-      const created =
+      const cookieDoc =
         await Cookie.create({
-          accountName:
-            cleanName,
-
-          cookies:
-            validation.cookies,
-
-          status:
-            'ACTIVE',
-
-          cooldownUntil:
-            null,
-
-          lastUsedAt:
-            new Date()
+          accountName: cleanName,
+          cookies,
+          status: 'ACTIVE',
+          lastError: null,
+          lastCheckedAt: new Date(),
+          lastUsedAt: new Date()
         });
 
-      this._log(
-        `✅ New Facebook cookie account created: "${cleanName}"`
+      console.log(
+        `[COOKIE-MANAGER] ✅ Cookies added: "${cleanName}"`
       );
 
-      return created;
+      return cookieDoc;
 
     } catch (error) {
-      this._error(
-        `❌ Failed to add cookies: ${error.message}`
+
+      console.error(
+        `[COOKIE-MANAGER][ERROR] ❌ Failed to add cookies: ${error.message}`
       );
 
       throw error;
@@ -707,85 +765,50 @@ class CookieManagerService {
   }
 
   // =========================================================
-  // Block account
+  // BLOCK COOKIE
   // =========================================================
 
   async blockCookie(
     cookieId,
     reason = 'Blocked'
   ) {
-    try {
-      const updated =
-        await Cookie.findByIdAndUpdate(
-          cookieId,
-          {
-            status:
-              'BLOCKED',
 
-            cooldownUntil:
-              new Date(
-                Date.now() +
-                  30 *
-                    60 *
-                    1000
-              )
-          },
-          {
-            new: true
-          }
-        );
-
-      if (updated) {
-        this._warn(
-          `🚫 Account "${updated.accountName}" blocked. Reason: ${reason}`
-        );
-      }
-
-      return updated;
-
-    } catch (error) {
-      this._error(
-        `Failed to block account: ${error.message}`
-      );
-
-      throw error;
-    }
+    return this.markBlocked(
+      cookieId,
+      reason
+    );
   }
 
   // =========================================================
-  // Unblock
+  // UNBLOCK
   // =========================================================
 
   async unblockCookie(
     cookieId
   ) {
+
     try {
+
       const updated =
         await Cookie.findByIdAndUpdate(
           cookieId,
           {
-            status:
-              'ACTIVE',
-
-            cooldownUntil:
-              null
+            status: 'ACTIVE',
+            cooldownUntil: null,
+            lastError: null,
+            lastCheckedAt: new Date()
           },
           {
             new: true
           }
         );
 
-      if (updated) {
-        this._log(
-          `🔓 Account "${updated.accountName}" activated`
-        );
-      }
-
       return updated;
 
     } catch (error) {
-      this._error(
-        `Failed to unblock account: ${error.message}`
+
+      console.error(
+        `[COOKIE-MANAGER][ERROR] ❌ Unblock failed: ${error.message}`
       );
 
       throw error;
@@ -793,52 +816,33 @@ class CookieManagerService {
   }
 
   // =========================================================
-  // Update usage
-  // =========================================================
-
-  async updateCookieUsage(
-    cookieId
-  ) {
-    try {
-      await Cookie.findByIdAndUpdate(
-        cookieId,
-        {
-          lastUsedAt:
-            new Date()
-        }
-      );
-
-    } catch (error) {
-      this._error(
-        `Failed to update cookie usage: ${error.message}`
-      );
-    }
-  }
-
-  // =========================================================
-  // Delete account
+  // DELETE ACCOUNT
   // =========================================================
 
   async deleteAccount(
     accountName
   ) {
+
     try {
+
       const result =
         await Cookie.findOneAndDelete({
           accountName
         });
 
       if (result) {
-        this._log(
-          `🗑️ Deleted account "${accountName}"`
+
+        console.log(
+          `[COOKIE-MANAGER] 🗑️ Account deleted: "${accountName}"`
         );
       }
 
       return result;
 
     } catch (error) {
-      this._error(
-        `Failed to delete account: ${error.message}`
+
+      console.error(
+        `[COOKIE-MANAGER][ERROR] ❌ Delete account failed: ${error.message}`
       );
 
       throw error;
@@ -846,40 +850,37 @@ class CookieManagerService {
   }
 
   // =========================================================
-  // Delete invalid accounts
-  //
-  // DOES NOT delete automatically.
-  // Returns list only.
+  // DELETE BLOCKED / EXPIRED
   // =========================================================
 
-  async findInvalidAccounts() {
-    const accounts =
-      await Cookie.find({});
+  async deleteInactiveAccounts() {
 
-    const invalid = [];
+    try {
 
-    for (const account of accounts) {
-      const validation =
-        this.validateCookiesDetailed(
-          account.cookies
-        );
-
-      if (
-        !validation.valid
-      ) {
-        invalid.push({
-          id: account._id,
-          accountName:
-            account.accountName ||
-            'UNKNOWN',
-          status:
-            account.status,
-          ...validation
+      const result =
+        await Cookie.deleteMany({
+          status: {
+            $in: [
+              'BLOCKED',
+              'EXPIRED'
+            ]
+          }
         });
-      }
-    }
 
-    return invalid;
+      console.log(
+        `[COOKIE-MANAGER] 🧹 Deleted ${result.deletedCount} inactive account(s)`
+      );
+
+      return result;
+
+    } catch (error) {
+
+      console.error(
+        `[COOKIE-MANAGER][ERROR] ❌ Failed deleting inactive accounts: ${error.message}`
+      );
+
+      throw error;
+    }
   }
 }
 
