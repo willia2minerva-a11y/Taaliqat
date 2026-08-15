@@ -1,5 +1,8 @@
 FROM node:18-slim
 
+ENV NODE_ENV=production
+ENV PUPPETEER_SKIP_DOWNLOAD=false
+
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     fonts-liberation \
@@ -23,11 +26,11 @@ WORKDIR /app
 
 COPY package*.json ./
 
-ENV PUPPETEER_SKIP_DOWNLOAD=false
-
-RUN npm install
+RUN npm install --omit=dev
 
 COPY . .
+
+RUN npm run build
 
 EXPOSE 10000
 
