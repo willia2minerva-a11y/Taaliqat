@@ -1,82 +1,83 @@
-// src/models/Cookie.js
-
 const mongoose = require('mongoose');
 
-const cookieSchema = new mongoose.Schema(
-  {
-    accountName: {
-      type: String,
-      required: true,
-      unique: true,
-      trim: true
-    },
-
-    /*
-     * يمكن أن يكون:
-     *
-     * 1) Array:
-     * [
-     *   { name: 'datr', value: '...' },
-     *   { name: 'c_user', value: '...' },
-     *   { name: 'xs', value: '...' },
-     *   { name: 'fr', value: '...' }
-     * ]
-     *
-     * أو:
-     *
-     * 2) Cookie Header String:
-     * datr=...;sb=...;c_user=...;xs=...;fr=...
-     */
-    cookies: {
-      type: mongoose.Schema.Types.Mixed,
-      required: true,
-      default: []
-    },
-
-    status: {
-      type: String,
-      enum: ['ACTIVE', 'BLOCKED', 'EXPIRED'],
-      default: 'ACTIVE'
-    },
-
-    cooldownUntil: {
-      type: Date,
-      default: null
-    },
-
-    lastUsedAt: {
-      type: Date,
-      default: null
-    },
-
-    lastValidationAt: {
-      type: Date,
-      default: null
-    },
-
-    lastValidationStatus: {
-      type: String,
-      enum: [
-        'VALID',
-        'INVALID',
-        'EMPTY',
-        'MISSING_REQUIRED',
-        'INVALID_FORMAT',
-        'ERROR',
-        null
-      ],
-      default: null
-    },
-
-    lastValidationReason: {
-      type: String,
-      default: null
-    }
+const pageSchema = new mongoose.Schema({
+  pageId: {
+    type: String,
+    required: true,
+    trim: true
   },
-  {
-    timestamps: true
+  pageName: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  pageAccessToken: {
+    type: String,
+    default: null
+  },
+  status: {
+    type: String,
+    enum: ['ACTIVE', 'BLOCKED', 'EXPIRED'],
+    default: 'ACTIVE'
+  },
+  cooldownUntil: {
+    type: Date,
+    default: null
+  },
+  lastUsedAt: {
+    type: Date,
+    default: null
+  },
+  commentsCount: {
+    type: Number,
+    default: 0
   }
-);
+}, {
+  timestamps: true
+});
 
-module.exports =
-  mongoose.model('Cookie', cookieSchema);
+const cookieSchema = new mongoose.Schema({
+  accountName: {
+    type: String,
+    required: true,
+    unique: true,
+    trim: true
+  },
+  cookies: {
+    type: mongoose.Schema.Types.Mixed,
+    required: true,
+    default: []
+  },
+  status: {
+    type: String,
+    enum: ['ACTIVE', 'BLOCKED', 'EXPIRED'],
+    default: 'ACTIVE'
+  },
+  cooldownUntil: {
+    type: Date,
+    default: null
+  },
+  lastUsedAt: {
+    type: Date,
+    default: null
+  },
+  // ✅ إضافة حقل الصفحات
+  pages: {
+    type: [pageSchema],
+    default: []
+  },
+  // عدد التعليقات التي تمت عبر الحساب الشخصي
+  personalCommentsCount: {
+    type: Number,
+    default: 0
+  },
+  // نسبة التعليقات عبر الصفحات (0-100)
+  pagesRatio: {
+    type: Number,
+    default: 60
+  }
+}, {
+  timestamps: true
+});
+
+module.exports = mongoose.model('Cookie', cookieSchema);
