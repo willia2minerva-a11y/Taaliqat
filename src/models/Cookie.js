@@ -32,6 +32,15 @@ const pageSchema = new mongoose.Schema({
   commentsCount: {
     type: Number,
     default: 0
+  },
+  // ✅ حقل لتخزين آخر خطأ (مرة واحدة فقط)
+  lastError: {
+    type: String,
+    default: null
+  },
+  lastErrorTime: {
+    type: Date,
+    default: null
   }
 }, {
   timestamps: true
@@ -77,6 +86,15 @@ const cookieSchema = new mongoose.Schema({
   pagesRatio: {
     type: Number,
     default: 60
+  },
+  // ✅ حقل لتخزين آخر خطأ للحساب الشخصي
+  lastError: {
+    type: String,
+    default: null
+  },
+  lastErrorTime: {
+    type: Date,
+    default: null
   }
 }, {
   timestamps: true
