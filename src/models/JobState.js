@@ -1,4 +1,3 @@
-// src/models/JobState.js
 const mongoose = require('mongoose');
 
 const jobStateSchema = new mongoose.Schema({
@@ -11,6 +10,11 @@ const jobStateSchema = new mongoose.Schema({
   isRunning: {
     type: Boolean,
     default: false
+  },
+  status: {
+    type: String,
+    enum: ['RUNNING', 'STOPPED', 'COMPLETED', 'AUTH_FAILED', 'NO_ACCOUNT', 'ERROR'],
+    default: 'STOPPED'
   },
   totalTarget: {
     type: Number,
@@ -28,21 +32,22 @@ const jobStateSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
-  // قائمة الانتظار الذرية للمنشورات المستخرجة
   pendingPosts: [{
     type: String
   }],
-  // سجل المنشورات التي تم معالجتها لتفادي التكرار
   visitedPosts: [{
     type: String
   }],
-  // تتبع حالة وصحة مفاتيح Gemini API للتحويل التلقائي للخطة B
   apiKeyHealthy: {
     type: Boolean,
     default: true
   },
   lastApiFailure: {
     type: Date,
+    default: null
+  },
+  errorReason: {
+    type: String,
     default: null
   }
 }, {
