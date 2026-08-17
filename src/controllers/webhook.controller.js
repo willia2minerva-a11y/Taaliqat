@@ -1,3 +1,4 @@
+// src/controllers/webhook.controller.js
 const config = require('../config');
 const jobService = require('../services/job.service');
 const messengerService = require('../services/messenger.service');
@@ -143,12 +144,24 @@ class WebhookController {
       }
 
       // =========================================================
-      // 🔑 ADD COOKIES
+      // 🔑 ADD COOKIES (الإصدار النهائي مع تشخيص كامل)
       // =========================================================
       else if (text.startsWith('/كوكيز')) {
-        const parts = text.split(' ');
-        const accountName = parts[1];
-        const cookieString = parts.slice(2).join(' ');
+        // ✅ استخدام regex لاستخراج اسم الحساب وجميع الكوكيز
+        const match = text.match(/^\/كوكيز\s+(\S+)\s+([\s\S]+)$/);
+
+        if (!match) {
+          await messengerService.sendTextMessage(
+            senderId,
+            '❌ الصيغة الصحيحة:\n/كوكيز [اسم_الحساب] [الكوكيز]\n\n' +
+            'مثال:\n' +
+            '/كوكيز ايتاشي datr=xxx;c_user=xxx;xs=xxx;fr=xxx'
+          );
+          return;
+        }
+
+        const accountName = match[1].trim();
+        const cookieString = match[2].trim();
 
         if (!accountName || !cookieString) {
           await messengerService.sendTextMessage(
@@ -158,16 +171,37 @@ class WebhookController {
           return;
         }
 
-        const cookies = cookieString.split('; ').map(cookie => {
-          const [name, value] = cookie.split('=');
-          return { name, value, domain: '.facebook.com', path: '/' };
-        });
+        // ✅ طباعة للتصحيح في Logs
+        console.log('\n════════════════════════════════════════════');
+        console.log('🍪 COOKIE COMMAND DEBUG');
+        console.log('════════════════════════════════════════════');
+        console.log('👤 Account:', accountName);
+        console.log('📏 Cookie string length:', cookieString.length);
+        console.log('🔎 Cookie string preview:', cookieString.substring(0, 150) + '...');
+        console.log('🔢 Cookie count in string:', cookieString.split(';').length);
+        console.log('🏷️ Cookie names in string:', cookieString.split(';').map(x => {
+          const idx = x.indexOf('=');
+          return idx > 0 ? x.substring(0, idx).trim() : x.trim();
+        }).join(', '));
+        console.log('════════════════════════════════════════════\n');
 
-        await cookieManagerService.addCookies(accountName, cookies);
-        await messengerService.sendTextMessage(
-          senderId,
-          `✅ تم إضافة حساب **${accountName}** بنجاح!`
-        );
+        try {
+          const result = await cookieManagerService.addCookies(accountName, cookieString);
+
+          const cookieCount = result.cookies?.length || 0;
+          await messengerService.sendTextMessage(
+            senderId,
+            `✅ تم إضافة حساب **${accountName}** بنجاح!\n` +
+            `📊 عدد الكوكيز: ${cookieCount}\n` +
+            `🔍 الكوكيز: ${result.cookies?.map(c => c.name).join(', ') || 'لا يوجد'}`
+          );
+        } catch (error) {
+          console.error(`❌ Add cookies error: ${error.message}`);
+          await messengerService.sendTextMessage(
+            senderId,
+            `❌ فشل إضافة الكوكيز: ${error.message}`
+          );
+        }
       }
 
       // =========================================================
