@@ -148,7 +148,6 @@ class FacebookService {
       throw new Error('BROWSER_ERROR: Browser is disconnected');
     }
 
-    // ✅ التشخيص: عدد الكوكيز الداخلة إلى _createPage
     const inputCount = Array.isArray(rawCookies) ? rawCookies.length : (typeof rawCookies === 'string' ? 'string' : 'unknown');
     this._log(`🍪 _createPage INPUT: ${inputCount}`);
 
@@ -167,7 +166,6 @@ class FacebookService {
       await page.setCookie(...cookies);
       this._log(`🍪 Loaded ${cookies.length} cookies into Puppeteer`);
 
-      // ✅ التشخيص: التحقق من الكوكيز داخل Puppeteer
       const browserCookies = await page.cookies();
       const browserCookieNames = browserCookies.map(c => c.name);
       this._log(`🔎 Puppeteer cookie verification: ${browserCookies.length} | ${browserCookieNames.join(', ')}`);
@@ -190,17 +188,31 @@ class FacebookService {
     page.on('request', req => {
       try {
         if (req.isInterceptResolutionHandled?.()) return;
-        ['image', 'media', 'font'].includes(req.resourceType()) ? req.abort() : req.continue();
+
+        const type = req.resourceType();
+
+        if (type === 'image' || type === 'media' || type === 'font') {
+          return req.abort();
+        }
+
+        return req.continue();
       } catch {}
     });
 
-    // ✅ التشخيص: تسجيل FAILED REQUESTS مع التفاصيل
+    // ✅ التشخيص: تسجيل FAILED REQUESTS (تجاهل الصور والوسائط والخطوط)
     page.on('requestfailed', req => {
+      const type = req.resourceType();
+
+      // تجاهل الموارد التي نلغيها عمداً
+      if (type === 'image' || type === 'media' || type === 'font') {
+        return;
+      }
+
       const failure = req.failure();
       console.log(
         `[FACEBOOK][REQUEST_FAILED]`,
         JSON.stringify({
-          type: req.resourceType(),
+          type: type,
           method: req.method(),
           error: failure?.errorText || 'UNKNOWN',
           url: req.url().substring(0, 300)
