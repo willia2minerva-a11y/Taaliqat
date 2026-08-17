@@ -2,9 +2,9 @@ const puppeteer = require('puppeteer');
 
 class FacebookService {
   constructor() {
-    this.navigationTimeout = 60000;
+    this.navigationTimeout = 45000;
     this.actionTimeout = 20000;
-    this.maxRetries = 2;
+    this.maxRetries = 1;
 
     this.debug = String(process.env.FACEBOOK_DEBUG || '').toLowerCase() === 'true';
     this.debugScreenshot = String(process.env.FACEBOOK_DEBUG_SCREENSHOT || '').toLowerCase() === 'true';
@@ -72,7 +72,7 @@ class FacebookService {
     const names = cookies.map(c => c.name);
     this._log(`🍪 Cookies prepared: ${cookies.length} | ${names.join(', ')}`);
 
-    const required = ['datr', 'c_user', 'xs', 'fr'];
+    const required = ['c_user', 'xs'];
     const missing = required.filter(x => !names.includes(x));
 
     if (missing.length) {
@@ -92,8 +92,8 @@ class FacebookService {
     try {
       const browser = await puppeteer.launch({
         headless: 'new',
-        timeout: 120000,
-        protocolTimeout: 120000,
+        timeout: 60000,
+        protocolTimeout: 60000,
         dumpio: this.debug,
         pipe: true,
         args: [
@@ -162,6 +162,10 @@ class FacebookService {
 
     const cookies = this._normalizeCookies(rawCookies);
 
+    // ✅ تخزين أسماء الكوكيز قبل التحميل للتشخيص
+    const beforeNames = cookies.map(c => c.name);
+    this._log(`🍪 BEFORE NAVIGATION: ${beforeNames.join(', ')}`);
+
     try {
       await page.setCookie(...cookies);
       this._log(`🍪 Loaded ${cookies.length} cookies into Puppeteer (on about:blank)`);
@@ -210,6 +214,61 @@ class FacebookService {
   }
 
   // =========================================================
+  // ✅ AUTHENTICATION CHECK (محسّن)
+  // =========================================================
+
+  async _checkAuthentication(page) {
+    // ✅ التحقق من الكوكيز بعد الانتقال
+    const fbCookies = await page.cookies('https://www.facebook.com/');
+    const fbCookieNames = fbCookies.map(c => c.name);
+    this._log(`🔎 AFTER NAVIGATION: ${fbCookies.length} | ${fbCookieNames.join(', ')}`);
+
+    const required = ['c_user', 'xs'];
+    const missing = required.filter(name => !fbCookieNames.includes(name));
+
+    if (missing.length) {
+      this._warn(`⚠️ Session cookies missing: ${missing.join(', ')}`);
+      return {
+        authenticated: false,
+        reason: 'SESSION_COOKIES_MISSING',
+        missing
+      };
+    }
+
+    // ✅ التحقق من محتوى الصفحة
+    const info = await this._pageInfo(page);
+    this._log(`📍 URL: ${info.url}`);
+    this._log(`📄 TITLE: ${info.title}`);
+
+    if (info.checkpoint) {
+      return { authenticated: false, reason: 'CHECKPOINT' };
+    }
+
+    if (info.login || info.url.includes('/login/')) {
+      return { authenticated: false, reason: 'LOGIN_PAGE' };
+    }
+
+    if (info.blocked) {
+      return { authenticated: false, reason: 'BLOCKED' };
+    }
+
+    // ✅ التحقق من وجود محتوى المجموعة
+    const hasContent = await page.evaluate(() => {
+      const hasPosts = document.querySelectorAll('[role="article"], article, [data-pagelet*="FeedUnit"]').length > 0;
+      const hasText = document.body?.innerText?.includes('منشور') || 
+                      document.body?.innerText?.includes('Post') ||
+                      document.body?.innerText?.includes('شاهد');
+      return hasPosts || hasText;
+    });
+
+    if (!hasContent && info.url.includes('/groups/')) {
+      return { authenticated: false, reason: 'NO_CONTENT' };
+    }
+
+    return { authenticated: true, reason: 'AUTHENTICATED' };
+  }
+
+  // =========================================================
   // PAGE INFO
   // =========================================================
 
@@ -231,27 +290,6 @@ class FacebookService {
     });
   }
 
-  async _checkAccess(page) {
-    const info = await this._pageInfo(page);
-
-    this._log(`📍 URL: ${info.url}`);
-    this._log(`📄 TITLE: ${info.title}`);
-
-    if (info.checkpoint) {
-      throw new Error('AUTHENTICATION_ERROR: Facebook security checkpoint detected');
-    }
-
-    if (info.login && !info.url.includes('/groups/')) {
-      throw new Error('AUTHENTICATION_ERROR: Facebook requires login. Cookies may be expired');
-    }
-
-    if (info.blocked) {
-      throw new Error('GROUP_ACCESS_ERROR: Facebook says this content is unavailable');
-    }
-
-    return info;
-  }
-
   // =========================================================
   // URL
   // =========================================================
@@ -268,25 +306,21 @@ class FacebookService {
     }
   }
 
-  // ✅ تحسين استخراج الروابط لدعم /permalink/ و /posts/
   _extractPostUrl(href) {
     try {
       const u = new URL(href);
       if (!u.hostname.toLowerCase().includes('facebook.com')) return null;
 
-      // مطابقة /groups/{group}/permalink/{id}/
       let m = u.pathname.match(/^\/groups\/([^/]+)\/permalink\/(\d+)\/?/i);
       if (m) {
         return `https://www.facebook.com/groups/${m[1]}/permalink/${m[2]}/`;
       }
 
-      // مطابقة /groups/{group}/posts/{id}/
       m = u.pathname.match(/^\/groups\/([^/]+)\/posts\/(\d+)\/?/i);
       if (m) {
         return `https://www.facebook.com/groups/${m[1]}/posts/${m[2]}/`;
       }
 
-      // مطابقة /story.php?story_fbid={id}
       if (u.pathname === '/story.php') {
         const id = u.searchParams.get('story_fbid');
         if (id) {
@@ -301,7 +335,7 @@ class FacebookService {
   }
 
   // =========================================================
-  // DISCOVER POSTS (محسّن)
+  // DISCOVER POSTS (مع تحسين المصادقة)
   // =========================================================
 
   async discoverPendingPosts(rawCookies, groupUrl) {
@@ -318,31 +352,33 @@ class FacebookService {
 
       this._log(`🌐 Navigating to: ${url}`);
 
-      // ✅ استخدام domcontentloaded بدلاً من commit
-      const response = await page.goto(url, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000
-      });
+      let response;
+      try {
+        response = await page.goto(url, {
+          waitUntil: 'domcontentloaded',
+          timeout: 30000
+        });
+      } catch (err) {
+        // ✅ إذا كان timeout، نتحقق مما إذا كنا على Facebook
+        if (page.url().includes('facebook.com')) {
+          this._warn(`⚠️ Navigation timeout but page is on Facebook: ${page.url()}`);
+        } else {
+          throw new Error(`NAVIGATION_TIMEOUT: ${err.message}`);
+        }
+      }
 
-      this._log(`🌐 Navigation response: ${response?.status() || 'NO_RESPONSE'}`);
+      if (response) {
+        this._log(`🌐 Navigation response: ${response.status()}`);
+      }
       this._log(`🌐 Final URL: ${page.url()}`);
       this._log(`📄 Title: ${await page.title()}`);
 
-      if (response && response.status() >= 400) {
-        throw new Error(`GROUP_ACCESS_ERROR: HTTP ${response.status()}`);
-      }
+      // ✅ التحقق من المصادقة
+      const auth = await this._checkAuthentication(page);
+      this._log(`🔐 Authentication: ${auth.reason}`);
 
-      // ✅ التحقق من الكوكيز بعد الانتقال
-      const fbCookies = await page.cookies('https://www.facebook.com/');
-      const fbCookieNames = fbCookies.map(c => c.name);
-      this._log(`🔎 Facebook cookies after navigation: ${fbCookies.length} | ${fbCookieNames.join(', ')}`);
-
-      const required = ['datr', 'c_user', 'xs', 'fr'];
-      const missingAfterNav = required.filter(name => !fbCookieNames.includes(name));
-      if (missingAfterNav.length) {
-        this._warn(`⚠️ Required cookies missing AFTER navigation: ${missingAfterNav.join(', ')}`);
-      } else {
-        this._log(`✅ All required Facebook cookies are present after navigation`);
+      if (!auth.authenticated) {
+        throw new Error(`AUTHENTICATION_ERROR: ${auth.reason}`);
       }
 
       // ✅ انتظار تحميل المحتوى
@@ -353,35 +389,13 @@ class FacebookService {
 
       await new Promise(r => setTimeout(r, 3000));
 
-      // ✅ التحقق من حالة المصادقة
-      const info = await this._pageInfo(page);
-      console.log('\n========== FACEBOOK AUTH CHECK ==========');
-      console.log('URL:', info.url);
-      console.log('TITLE:', info.title);
-      console.log('LOGIN:', info.login);
-      console.log('CHECKPOINT:', info.checkpoint);
-      console.log('BLOCKED:', info.blocked);
-      console.log('=========================================\n');
-
-      if (info.checkpoint) {
-        throw new Error('AUTHENTICATION_ERROR: Facebook security checkpoint detected');
-      }
-
-      if (info.login && !info.url.includes('/groups/')) {
-        throw new Error('AUTHENTICATION_ERROR: Facebook requires login. Cookies may be expired');
-      }
-
-      if (info.blocked) {
-        throw new Error('GROUP_ACCESS_ERROR: Facebook says this content is unavailable');
-      }
-
-      // ✅ التمرير لتحميل المزيد
+      // ✅ التمرير
       for (let i = 0; i < 8; i++) {
         await page.evaluate(() => window.scrollBy(0, 1200));
         await new Promise(r => setTimeout(r, 1000));
       }
 
-      // ✅ استخراج الروابط (محسّن)
+      // ✅ استخراج الروابط
       const postUrls = await page.evaluate(() => {
         const links = Array.from(document.querySelectorAll('a[href]'));
         
@@ -405,14 +419,12 @@ class FacebookService {
 
       this._log(`🔎 Post permalinks found: ${postUrls.length}`);
 
-      // ✅ تحويل الروابط إلى الصيغة الموحدة
       const posts = new Set();
       for (const link of postUrls) {
         const p = this._extractPostUrl(link);
         if (p) posts.add(p);
       }
 
-      // ✅ البحث في HTML الخام كخطة بديلة
       if (posts.size === 0) {
         this._log('🔍 No posts found in DOM, searching HTML...');
         const html = await page.content();
@@ -431,21 +443,7 @@ class FacebookService {
       this._log(`🔎 Total posts found: ${result.length}`);
 
       if (!result.length) {
-        // ✅ طباعة معلومات إضافية للتشخيص
-        const state = await page.evaluate(() => ({
-          url: location.href,
-          title: document.title,
-          bodyLength: document.body?.innerText?.length || 0,
-          links: document.querySelectorAll('a[href]').length,
-          articles: document.querySelectorAll('article,[role="article"]').length,
-          feed: document.querySelectorAll('[role="feed"]').length,
-          main: document.querySelectorAll('main').length
-        }));
-
-        console.log('\n========== FACEBOOK PAGE STATE ==========');
-        console.log(JSON.stringify(state, null, 2));
-        console.log('=========================================\n');
-
+        const info = await this._pageInfo(page);
         console.log('\n========== FACEBOOK DEBUG ==========');
         console.log(`URL: ${info.url}`);
         console.log(`TITLE: ${info.title}`);
@@ -457,13 +455,6 @@ class FacebookService {
         console.log(`BODY (first 500 chars): ${info.text.substring(0, 500)}`);
         console.log('====================================\n');
 
-        if (this.debugScreenshot) {
-          try {
-            await page.screenshot({ path: '/tmp/facebook-debug.png', fullPage: true });
-            this._log('📸 Screenshot: /tmp/facebook-debug.png');
-          } catch {}
-        }
-
         throw new Error('POST_DISCOVERY_ERROR: No Facebook post URLs found');
       }
 
@@ -474,22 +465,11 @@ class FacebookService {
       this._error('discoverPendingPosts', error);
       throw error;
     } finally {
-      // ✅ إغلاق الصفحة والمتصفح بشكل آمن
       if (page && !page.isClosed()) {
-        try {
-          await page.close();
-        } catch (e) {
-          this._warn(`Page close error: ${e.message}`);
-        }
+        try { await page.close(); } catch (e) {}
       }
-
       if (browser && browser.isConnected()) {
-        try {
-          await browser.close();
-          this._log('🔒 Browser closed');
-        } catch (e) {
-          this._warn(`Browser close error: ${e.message}`);
-        }
+        try { await browser.close(); } catch (e) {}
       }
     }
   }
@@ -518,8 +498,12 @@ class FacebookService {
         timeout: 30000
       });
 
+      const auth = await this._checkAuthentication(page);
+      if (!auth.authenticated) {
+        throw new Error(`AUTHENTICATION_ERROR: ${auth.reason}`);
+      }
+
       await new Promise(r => setTimeout(r, 3000));
-      await this._checkAccess(page);
 
       const text = await page.evaluate(() => {
         const elements = [
@@ -583,8 +567,12 @@ class FacebookService {
         timeout: 30000
       });
 
+      const auth = await this._checkAuthentication(page);
+      if (!auth.authenticated) {
+        throw new Error(`AUTHENTICATION_ERROR: ${auth.reason}`);
+      }
+
       await new Promise(r => setTimeout(r, 3000));
-      await this._checkAccess(page);
 
       const box = 'textarea[name="comment_text"],textarea';
       const button = 'input[type="submit"][name="post"],input[type="submit"]';
@@ -654,8 +642,12 @@ class FacebookService {
         timeout: 30000
       });
 
+      const auth = await this._checkAuthentication(page);
+      if (!auth.authenticated) {
+        throw new Error(`AUTHENTICATION_ERROR: ${auth.reason}`);
+      }
+
       await new Promise(r => setTimeout(r, 3000));
-      await this._checkAccess(page);
 
       const box = 'textarea[name="comment_text"],textarea';
       const button = 'input[type="submit"][name="post"],input[type="submit"]';
