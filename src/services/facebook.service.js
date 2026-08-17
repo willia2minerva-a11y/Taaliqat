@@ -169,7 +169,6 @@ class FacebookService {
       throw new Error(`COOKIE_ERROR: Failed to set cookies: ${err.message}`);
     }
 
-    // ✅ إعداد اعتراض الطلبات
     await page.setRequestInterception(true);
 
     page.on('request', req => {
@@ -186,7 +185,6 @@ class FacebookService {
       } catch {}
     });
 
-    // ✅ التشخيص: تسجيل FAILED REQUESTS (تجاهل الصور والوسائط والخطوط)
     page.on('requestfailed', req => {
       const type = req.resourceType();
 
@@ -206,7 +204,6 @@ class FacebookService {
       );
     });
 
-    // ✅ التشخيص: تسجيل HTTP ERRORS
     page.on('response', response => {
       const status = response.status();
       if (status >= 400) {
@@ -276,12 +273,10 @@ class FacebookService {
     try {
       const u = new URL(url);
       
-      // ✅ التأكد من أن المضيف هو Facebook
       if (!u.hostname.toLowerCase().includes('facebook.com')) {
         throw new Error('Invalid Facebook URL');
       }
 
-      // ✅ توحيد الرابط إلى www.facebook.com
       return `https://www.facebook.com${u.pathname}${u.search}`;
     } catch {
       throw new Error(`GROUP_URL_ERROR: Invalid group URL: ${url}`);
@@ -312,7 +307,7 @@ class FacebookService {
   }
 
   // =========================================================
-  // DISCOVER POSTS
+  // DISCOVER POSTS (محسّن مع تشخيص متقدم)
   // =========================================================
 
   async discoverPendingPosts(rawCookies, groupUrl) {
@@ -344,7 +339,7 @@ class FacebookService {
           throw new Error(`GROUP_ACCESS_ERROR: HTTP ${response.status()}`);
         }
 
-        // ✅ التحقق من الكوكيز بعد الانتقال إلى Facebook
+        // ✅ التحقق من الكوكيز بعد الانتقال
         const fbCookies = await page.cookies('https://www.facebook.com/');
         const fbCookieNames = fbCookies.map(c => c.name);
         this._log(`🔎 Facebook cookies after navigation: ${fbCookies.length} | ${fbCookieNames.join(', ')}`);
@@ -367,7 +362,6 @@ class FacebookService {
         console.log('BLOCKED:', info.blocked);
         console.log('=========================================\n');
 
-        // ✅ إذا كان هناك مشكلة في المصادقة، نرمي خطأ واضح
         if (info.checkpoint) {
           throw new Error('AUTHENTICATION_ERROR: Facebook security checkpoint detected');
         }
@@ -380,23 +374,66 @@ class FacebookService {
           throw new Error('GROUP_ACCESS_ERROR: Facebook says this content is unavailable');
         }
 
-        // تحميل المزيد من المنشورات
-        for (let i = 0; i < 6; i++) {
-          await page.evaluate(() => window.scrollBy(0, 1000));
-          await new Promise(r => setTimeout(r, 1200));
+        // ✅ انتظار تحميل المحتوى
+        await new Promise(r => setTimeout(r, 3000));
+
+        // ✅ التمرير لتحميل المزيد
+        for (let i = 0; i < 8; i++) {
+          await page.evaluate(() => window.scrollBy(0, 1200));
+          await new Promise(r => setTimeout(r, 1500));
         }
 
-        const links = await page.evaluate(() =>
+        // ✅ التشخيص المتقدم: ما الذي يراه Puppeteer؟
+        const diagnostics = await page.evaluate(() => {
+          const links = [...document.querySelectorAll('a[href]')]
+            .map(a => ({
+              href: a.href,
+              text: (a.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 150)
+            }))
+            .filter(x => x.href);
+
+          const groupLinks = links.filter(x =>
+            x.href.includes('/groups/')
+          );
+
+          const permalinkLinks = links.filter(x =>
+            x.href.includes('/permalink/') ||
+            x.href.includes('/posts/')
+          );
+
+          return {
+            url: location.href,
+            title: document.title,
+            totalLinks: links.length,
+            groupLinks: groupLinks.slice(0, 30).map(x => x.href),
+            permalinkLinks: permalinkLinks.slice(0, 30).map(x => x.href),
+            articleCount: document.querySelectorAll(
+              'article,[role="article"]'
+            ).length,
+            bodyLength: document.body?.innerText?.length || 0,
+            hasFeed: !!document.querySelector('[role="feed"]'),
+            hasMain: !!document.querySelector('main')
+          };
+        });
+
+        console.log('\n========== POST DISCOVERY DIAGNOSTICS ==========');
+        console.log(JSON.stringify(diagnostics, null, 2));
+        console.log('================================================\n');
+
+        // ✅ استخراج الروابط من عدة مصادر
+        const posts = new Set();
+
+        // 1. الروابط المباشرة
+        const allLinks = await page.evaluate(() =>
           [...document.querySelectorAll('a[href]')].map(a => a.href).filter(Boolean)
         );
 
-        const posts = new Set();
-
-        for (const link of links) {
+        for (const link of allLinks) {
           const p = this._postUrl(link);
           if (p) posts.add(p);
         }
 
+        // 2. البحث في HTML الخام عن روابط المنشورات
         const html = await page.content();
         const matches = html.match(/(?:https?:\/\/(?:www\.)?facebook\.com)?\/groups\/[^"'\\<>\s]+\/(?:permalink|posts)\/\d+\/?/gi) || [];
 
@@ -406,6 +443,28 @@ class FacebookService {
           }
           const p = this._postUrl(link);
           if (p) posts.add(p);
+        }
+
+        // 3. البحث عن IDs في العناصر (بديل)
+        const postIds = await page.evaluate(() => {
+          const ids = [];
+          const elements = document.querySelectorAll('[data-ft]');
+          for (const el of elements) {
+            const ft = el.getAttribute('data-ft');
+            if (ft && ft.includes('"top_level_post_id"')) {
+              try {
+                const parsed = JSON.parse(ft);
+                if (parsed.top_level_post_id) {
+                  ids.push(parsed.top_level_post_id);
+                }
+              } catch {}
+            }
+          }
+          return ids;
+        });
+
+        for (const id of postIds) {
+          posts.add(`https://www.facebook.com/groups/${groupUrl.split('/groups/')[1]?.split('/')[0]}/permalink/${id}/`);
         }
 
         const result = [...posts];
