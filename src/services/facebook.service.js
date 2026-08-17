@@ -2,7 +2,7 @@ const puppeteer = require('puppeteer');
 
 class FacebookService {
   constructor() {
-    this.navigationTimeout = 60000; // ✅ زيادة إلى 60 ثانية
+    this.navigationTimeout = 60000;
     this.actionTimeout = 20000;
     this.maxRetries = 2;
 
@@ -140,7 +140,7 @@ class FacebookService {
   }
 
   // =========================================================
-  // PAGE (بدون req.abort() - للتشخيص)
+  // PAGE
   // =========================================================
 
   async _createPage(browser, rawCookies) {
@@ -169,7 +169,6 @@ class FacebookService {
       throw new Error(`COOKIE_ERROR: Failed to set cookies: ${err.message}`);
     }
 
-    // ✅ اعتراض الطلبات - بدون req.abort() للتشخيص
     await page.setRequestInterception(true);
 
     page.on('request', req => {
@@ -179,7 +178,6 @@ class FacebookService {
       } catch {}
     });
 
-    // ✅ تسجيل الطلبات الفاشلة
     page.on('requestfailed', req => {
       const failure = req.failure();
       console.log(
@@ -193,7 +191,6 @@ class FacebookService {
       );
     });
 
-    // ✅ تسجيل أخطاء HTTP
     page.on('response', response => {
       const status = response.status();
       if (status >= 400) {
@@ -271,16 +268,25 @@ class FacebookService {
     }
   }
 
-  _postUrl(href) {
+  // ✅ تحسين استخراج الروابط لدعم /permalink/ و /posts/
+  _extractPostUrl(href) {
     try {
       const u = new URL(href);
       if (!u.hostname.toLowerCase().includes('facebook.com')) return null;
 
-      let m = u.pathname.match(/^\/groups\/([^/]+)\/(?:permalink|posts)\/(\d+)\/?/i);
+      // مطابقة /groups/{group}/permalink/{id}/
+      let m = u.pathname.match(/^\/groups\/([^/]+)\/permalink\/(\d+)\/?/i);
       if (m) {
         return `https://www.facebook.com/groups/${m[1]}/permalink/${m[2]}/`;
       }
 
+      // مطابقة /groups/{group}/posts/{id}/
+      m = u.pathname.match(/^\/groups\/([^/]+)\/posts\/(\d+)\/?/i);
+      if (m) {
+        return `https://www.facebook.com/groups/${m[1]}/posts/${m[2]}/`;
+      }
+
+      // مطابقة /story.php?story_fbid={id}
       if (u.pathname === '/story.php') {
         const id = u.searchParams.get('story_fbid');
         if (id) {
@@ -295,142 +301,120 @@ class FacebookService {
   }
 
   // =========================================================
-  // DISCOVER POSTS (مع waitUntil: 'commit' ومعالجة timeout)
+  // DISCOVER POSTS (محسّن)
   // =========================================================
 
   async discoverPendingPosts(rawCookies, groupUrl) {
     this._log(`🍪 DISCOVERY INPUT: ${Array.isArray(rawCookies) ? rawCookies.length : typeof rawCookies}`);
 
-    return this._retry(async () => {
-      let browser;
-      let page;
+    let browser = null;
+    let page = null;
 
-      try {
-        const url = this._groupUrl(groupUrl);
+    try {
+      const url = this._groupUrl(groupUrl);
 
-        browser = await this._launchBrowser();
-        page = await this._createPage(browser, rawCookies);
+      browser = await this._launchBrowser();
+      page = await this._createPage(browser, rawCookies);
 
-        this._log(`🌐 Navigating to: ${url}`);
+      this._log(`🌐 Navigating to: ${url}`);
 
-        let response;
-        try {
-          // ✅ استخدام waitUntil: 'commit' بدلاً من 'domcontentloaded'
-          response = await page.goto(url, {
-            waitUntil: 'commit',
-            timeout: 15000
-          });
+      // ✅ استخدام domcontentloaded بدلاً من commit
+      const response = await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      });
 
-          this._log(`🌐 Navigation committed | HTTP=${response?.status() || 'unknown'}`);
+      this._log(`🌐 Navigation response: ${response?.status() || 'NO_RESPONSE'}`);
+      this._log(`🌐 Final URL: ${page.url()}`);
+      this._log(`📄 Title: ${await page.title()}`);
 
-        } catch (err) {
-          this._error('NAVIGATION', err);
+      if (response && response.status() >= 400) {
+        throw new Error(`GROUP_ACCESS_ERROR: HTTP ${response.status()}`);
+      }
 
-          this._log(`🌐 URL at failure: ${page.url()}`);
+      // ✅ التحقق من الكوكيز بعد الانتقال
+      const fbCookies = await page.cookies('https://www.facebook.com/');
+      const fbCookieNames = fbCookies.map(c => c.name);
+      this._log(`🔎 Facebook cookies after navigation: ${fbCookies.length} | ${fbCookieNames.join(', ')}`);
 
-          // ✅ إذا وصلنا فعلياً إلى Facebook، لا نعتبر timeout فشلاً مباشراً
-          if (
-            page.url().includes('facebook.com') &&
-            !page.isClosed()
-          ) {
-            this._warn('⚠️ Navigation timeout but Facebook page exists. Continuing diagnostics...');
-          } else {
-            throw new Error(`NAVIGATION_ERROR: ${err.message}`);
-          }
-        }
+      const required = ['datr', 'c_user', 'xs', 'fr'];
+      const missingAfterNav = required.filter(name => !fbCookieNames.includes(name));
+      if (missingAfterNav.length) {
+        this._warn(`⚠️ Required cookies missing AFTER navigation: ${missingAfterNav.join(', ')}`);
+      } else {
+        this._log(`✅ All required Facebook cookies are present after navigation`);
+      }
 
-        // ✅ انتظار إضافي للسماح بتحميل المحتوى
-        await new Promise(resolve => setTimeout(resolve, 8000));
+      // ✅ انتظار تحميل المحتوى
+      await page.waitForNetworkIdle({
+        idleTime: 1500,
+        timeout: 15000
+      }).catch(() => {});
 
-        if (page.isClosed()) {
-          throw new Error('BROWSER_ERROR: Page closed during Facebook navigation');
-        }
+      await new Promise(r => setTimeout(r, 3000));
 
-        this._log(`🌐 Final URL: ${page.url()}`);
-        this._log(`📄 Title: ${await page.title()}`);
+      // ✅ التحقق من حالة المصادقة
+      const info = await this._pageInfo(page);
+      console.log('\n========== FACEBOOK AUTH CHECK ==========');
+      console.log('URL:', info.url);
+      console.log('TITLE:', info.title);
+      console.log('LOGIN:', info.login);
+      console.log('CHECKPOINT:', info.checkpoint);
+      console.log('BLOCKED:', info.blocked);
+      console.log('=========================================\n');
 
-        // ✅ التحقق من الكوكيز بعد الانتقال
-        const fbCookies = await page.cookies('https://www.facebook.com/');
-        const fbCookieNames = fbCookies.map(c => c.name);
-        this._log(`🔎 Facebook cookies after navigation: ${fbCookies.length} | ${fbCookieNames.join(', ')}`);
+      if (info.checkpoint) {
+        throw new Error('AUTHENTICATION_ERROR: Facebook security checkpoint detected');
+      }
 
-        const required = ['datr', 'c_user', 'xs', 'fr'];
-        const missingAfterNav = required.filter(name => !fbCookieNames.includes(name));
-        if (missingAfterNav.length) {
-          this._warn(`⚠️ Required cookies missing AFTER navigation: ${missingAfterNav.join(', ')}`);
-        } else {
-          this._log(`✅ All required Facebook cookies are present after navigation`);
-        }
+      if (info.login && !info.url.includes('/groups/')) {
+        throw new Error('AUTHENTICATION_ERROR: Facebook requires login. Cookies may be expired');
+      }
 
-        // ✅ التشخيص المتقدم للصفحة
-        const state = await page.evaluate(() => {
-          const links = [...document.querySelectorAll('a[href]')]
-            .map(a => ({
-              href: a.href,
-              text: (a.innerText || '').trim()
-            }))
-            .filter(x => x.href);
+      if (info.blocked) {
+        throw new Error('GROUP_ACCESS_ERROR: Facebook says this content is unavailable');
+      }
 
-          const postLinks = links.filter(x =>
-            /\/groups\/[^/]+\/(permalink|posts)\//i.test(x.href)
-          );
+      // ✅ التمرير لتحميل المزيد
+      for (let i = 0; i < 8; i++) {
+        await page.evaluate(() => window.scrollBy(0, 1200));
+        await new Promise(r => setTimeout(r, 1000));
+      }
 
-          return {
-            url: location.href,
-            title: document.title,
-            bodyLength: document.body?.innerText?.length || 0,
-            links: links.length,
-            postLinks: [...new Set(postLinks.map(x => x.href))].slice(0, 100),
-            articles: document.querySelectorAll('article').length,
-            roleArticles: document.querySelectorAll('[role="article"]').length,
-            feed: document.querySelectorAll('[role="feed"]').length,
-            main: document.querySelectorAll('main').length,
-            text: (document.body?.innerText || '')
-              .replace(/\s+/g, ' ')
-              .slice(0, 1500)
-          };
-        });
+      // ✅ استخراج الروابط (محسّن)
+      const postUrls = await page.evaluate(() => {
+        const links = Array.from(document.querySelectorAll('a[href]'));
+        
+        return links
+          .map(a => a.href)
+          .filter(Boolean)
+          .map(url => {
+            try {
+              return new URL(url, location.origin).href;
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean)
+          .filter(url =>
+            /facebook\.com\/groups\/[^/]+\/(permalink|posts)\/\d+/i.test(url)
+          )
+          .map(url => url.split('?')[0])
+          .filter((url, index, arr) => arr.indexOf(url) === index);
+      });
 
-        console.log('\n========== FACEBOOK PAGE STATE ==========');
-        console.log(JSON.stringify(state, null, 2));
-        console.log('=========================================\n');
+      this._log(`🔎 Post permalinks found: ${postUrls.length}`);
 
-        // ✅ التحقق من حالة المصادقة
-        const info = await this._pageInfo(page);
-        console.log('\n========== FACEBOOK AUTH CHECK ==========');
-        console.log('URL:', info.url);
-        console.log('TITLE:', info.title);
-        console.log('LOGIN:', info.login);
-        console.log('CHECKPOINT:', info.checkpoint);
-        console.log('BLOCKED:', info.blocked);
-        console.log('=========================================\n');
+      // ✅ تحويل الروابط إلى الصيغة الموحدة
+      const posts = new Set();
+      for (const link of postUrls) {
+        const p = this._extractPostUrl(link);
+        if (p) posts.add(p);
+      }
 
-        if (info.checkpoint) {
-          throw new Error('AUTHENTICATION_ERROR: Facebook security checkpoint detected');
-        }
-
-        if (info.login && !info.url.includes('/groups/')) {
-          throw new Error('AUTHENTICATION_ERROR: Facebook requires login. Cookies may be expired');
-        }
-
-        if (info.blocked) {
-          throw new Error('GROUP_ACCESS_ERROR: Facebook says this content is unavailable');
-        }
-
-        // ✅ استخراج الروابط من عدة مصادر
-        const posts = new Set();
-
-        // 1. الروابط المباشرة
-        const allLinks = await page.evaluate(() =>
-          [...document.querySelectorAll('a[href]')].map(a => a.href).filter(Boolean)
-        );
-
-        for (const link of allLinks) {
-          const p = this._postUrl(link);
-          if (p) posts.add(p);
-        }
-
-        // 2. البحث في HTML الخام
+      // ✅ البحث في HTML الخام كخطة بديلة
+      if (posts.size === 0) {
+        this._log('🔍 No posts found in DOM, searching HTML...');
         const html = await page.content();
         const matches = html.match(/(?:https?:\/\/(?:www\.)?facebook\.com)?\/groups\/[^"'\\<>\s]+\/(?:permalink|posts)\/\d+\/?/gi) || [];
 
@@ -438,43 +422,76 @@ class FacebookService {
           if (link.startsWith('/')) {
             link = `https://www.facebook.com${link}`;
           }
-          const p = this._postUrl(link);
+          const p = this._extractPostUrl(link);
           if (p) posts.add(p);
         }
+      }
 
-        const result = [...posts];
-        this._log(`🔎 Total posts found: ${result.length}`);
+      const result = [...posts];
+      this._log(`🔎 Total posts found: ${result.length}`);
 
-        if (!result.length) {
-          console.log('\n========== FACEBOOK DEBUG ==========');
-          console.log(`URL: ${info.url}`);
-          console.log(`TITLE: ${info.title}`);
-          console.log(`LINKS: ${info.links}`);
-          console.log(`ARTICLES: ${info.articles}`);
-          console.log(`LOGIN: ${info.login}`);
-          console.log(`CHECKPOINT: ${info.checkpoint}`);
-          console.log(`BLOCKED: ${info.blocked}`);
-          console.log(`BODY (first 500 chars): ${info.text.substring(0, 500)}`);
-          console.log('====================================\n');
+      if (!result.length) {
+        // ✅ طباعة معلومات إضافية للتشخيص
+        const state = await page.evaluate(() => ({
+          url: location.href,
+          title: document.title,
+          bodyLength: document.body?.innerText?.length || 0,
+          links: document.querySelectorAll('a[href]').length,
+          articles: document.querySelectorAll('article,[role="article"]').length,
+          feed: document.querySelectorAll('[role="feed"]').length,
+          main: document.querySelectorAll('main').length
+        }));
 
-          if (this.debugScreenshot) {
-            try {
-              await page.screenshot({ path: '/tmp/facebook-debug.png', fullPage: true });
-              this._log('📸 Screenshot: /tmp/facebook-debug.png');
-            } catch {}
-          }
+        console.log('\n========== FACEBOOK PAGE STATE ==========');
+        console.log(JSON.stringify(state, null, 2));
+        console.log('=========================================\n');
 
-          throw new Error('POST_DISCOVERY_ERROR: No Facebook post URLs found');
+        console.log('\n========== FACEBOOK DEBUG ==========');
+        console.log(`URL: ${info.url}`);
+        console.log(`TITLE: ${info.title}`);
+        console.log(`LINKS: ${info.links}`);
+        console.log(`ARTICLES: ${info.articles}`);
+        console.log(`LOGIN: ${info.login}`);
+        console.log(`CHECKPOINT: ${info.checkpoint}`);
+        console.log(`BLOCKED: ${info.blocked}`);
+        console.log(`BODY (first 500 chars): ${info.text.substring(0, 500)}`);
+        console.log('====================================\n');
+
+        if (this.debugScreenshot) {
+          try {
+            await page.screenshot({ path: '/tmp/facebook-debug.png', fullPage: true });
+            this._log('📸 Screenshot: /tmp/facebook-debug.png');
+          } catch {}
         }
 
-        result.forEach((p, i) => this._log(`📌 Post ${i + 1}: ${p}`));
-        return result;
-
-      } finally {
-        await this._close(page);
-        await this._closeBrowser(browser);
+        throw new Error('POST_DISCOVERY_ERROR: No Facebook post URLs found');
       }
-    }, 'discoverPendingPosts');
+
+      result.forEach((p, i) => this._log(`📌 Post ${i + 1}: ${p}`));
+      return result;
+
+    } catch (error) {
+      this._error('discoverPendingPosts', error);
+      throw error;
+    } finally {
+      // ✅ إغلاق الصفحة والمتصفح بشكل آمن
+      if (page && !page.isClosed()) {
+        try {
+          await page.close();
+        } catch (e) {
+          this._warn(`Page close error: ${e.message}`);
+        }
+      }
+
+      if (browser && browser.isConnected()) {
+        try {
+          await browser.close();
+          this._log('🔒 Browser closed');
+        } catch (e) {
+          this._warn(`Browser close error: ${e.message}`);
+        }
+      }
+    }
   }
 
   // =========================================================
@@ -484,49 +501,54 @@ class FacebookService {
   async fetchPostText(rawCookies, postUrl) {
     this._log(`🍪 FETCH POST INPUT: ${Array.isArray(rawCookies) ? rawCookies.length : typeof rawCookies}`);
 
-    return this._retry(async () => {
-      let browser;
-      let page;
+    let browser = null;
+    let page = null;
 
-      try {
-        const url = this._postUrl(postUrl);
-        if (!url) {
-          throw new Error(`POST_URL_ERROR: Invalid URL: ${postUrl}`);
-        }
-
-        browser = await this._launchBrowser();
-        page = await this._createPage(browser, rawCookies);
-
-        await page.goto(url, {
-          waitUntil: 'commit',
-          timeout: 15000
-        });
-
-        await new Promise(r => setTimeout(r, 3000));
-        await this._checkAccess(page);
-
-        const text = await page.evaluate(() => {
-          const elements = [
-            ...document.querySelectorAll('[role="article"],article,[data-pagelet*="FeedUnit"]')
-          ];
-          const texts = elements
-            .map(e => e.innerText?.replace(/\s+/g, ' ').trim())
-            .filter(x => x && x.length >= 20);
-          return texts.sort((a, b) => b.length - a.length)[0] || '';
-        });
-
-        if (!text) {
-          throw new Error('POST_TEXT_ERROR: No post text found');
-        }
-
-        this._log(`📄 Post text: ${text.length} chars`);
-        return text;
-
-      } finally {
-        await this._close(page);
-        await this._closeBrowser(browser);
+    try {
+      const url = this._extractPostUrl(postUrl);
+      if (!url) {
+        throw new Error(`POST_URL_ERROR: Invalid URL: ${postUrl}`);
       }
-    }, 'fetchPostText');
+
+      browser = await this._launchBrowser();
+      page = await this._createPage(browser, rawCookies);
+
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      });
+
+      await new Promise(r => setTimeout(r, 3000));
+      await this._checkAccess(page);
+
+      const text = await page.evaluate(() => {
+        const elements = [
+          ...document.querySelectorAll('[role="article"],article,[data-pagelet*="FeedUnit"]')
+        ];
+        const texts = elements
+          .map(e => e.innerText?.replace(/\s+/g, ' ').trim())
+          .filter(x => x && x.length >= 20);
+        return texts.sort((a, b) => b.length - a.length)[0] || '';
+      });
+
+      if (!text) {
+        throw new Error('POST_TEXT_ERROR: No post text found');
+      }
+
+      this._log(`📄 Post text: ${text.length} chars`);
+      return text;
+
+    } catch (error) {
+      this._error('fetchPostText', error);
+      throw error;
+    } finally {
+      if (page && !page.isClosed()) {
+        try { await page.close(); } catch (e) {}
+      }
+      if (browser && browser.isConnected()) {
+        try { await browser.close(); } catch (e) {}
+      }
+    }
   }
 
   // =========================================================
@@ -536,71 +558,76 @@ class FacebookService {
   async submitDualComments(rawCookies, postUrl, aiComment, hashtag) {
     this._log(`🍪 COMMENT INPUT: ${Array.isArray(rawCookies) ? rawCookies.length : typeof rawCookies}`);
 
-    return this._retry(async () => {
-      let browser;
-      let page;
+    let browser = null;
+    let page = null;
+
+    try {
+      const url = this._extractPostUrl(postUrl);
+      if (!url) {
+        throw new Error(`POST_URL_ERROR: Invalid URL: ${postUrl}`);
+      }
+
+      if (!String(aiComment || '').trim()) {
+        throw new Error('COMMENT_ERROR: AI comment is empty');
+      }
+
+      if (!String(hashtag || '').trim()) {
+        throw new Error('COMMENT_ERROR: Hashtag is empty');
+      }
+
+      browser = await this._launchBrowser();
+      page = await this._createPage(browser, rawCookies);
+
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      });
+
+      await new Promise(r => setTimeout(r, 3000));
+      await this._checkAccess(page);
+
+      const box = 'textarea[name="comment_text"],textarea';
+      const button = 'input[type="submit"][name="post"],input[type="submit"]';
+
+      await page.waitForSelector(box, { timeout: 15000 });
+      await page.click(box);
+      await page.type(box, String(aiComment).trim(), { delay: 15 });
+
+      await page.waitForSelector(button, { timeout: 10000 });
+      await page.click(button);
+      await new Promise(r => setTimeout(r, 4000));
+
+      this._log('✅ AI comment submitted');
 
       try {
-        const url = this._postUrl(postUrl);
-        if (!url) {
-          throw new Error(`POST_URL_ERROR: Invalid URL: ${postUrl}`);
-        }
-
-        if (!String(aiComment || '').trim()) {
-          throw new Error('COMMENT_ERROR: AI comment is empty');
-        }
-
-        if (!String(hashtag || '').trim()) {
-          throw new Error('COMMENT_ERROR: Hashtag is empty');
-        }
-
-        browser = await this._launchBrowser();
-        page = await this._createPage(browser, rawCookies);
-
-        await page.goto(url, {
-          waitUntil: 'commit',
-          timeout: 15000
-        });
-
-        await new Promise(r => setTimeout(r, 3000));
-        await this._checkAccess(page);
-
-        const box = 'textarea[name="comment_text"],textarea';
-        const button = 'input[type="submit"][name="post"],input[type="submit"]';
-
+        await page.waitForSelector(box, { timeout: 8000 });
+      } catch {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await new Promise(r => setTimeout(r, 2500));
         await page.waitForSelector(box, { timeout: 15000 });
-        await page.click(box);
-        await page.type(box, String(aiComment).trim(), { delay: 15 });
-
-        await page.waitForSelector(button, { timeout: 10000 });
-        await page.click(button);
-        await new Promise(r => setTimeout(r, 4000));
-
-        this._log('✅ AI comment submitted');
-
-        try {
-          await page.waitForSelector(box, { timeout: 8000 });
-        } catch {
-          await page.goto(url, { waitUntil: 'commit', timeout: 15000 });
-          await new Promise(r => setTimeout(r, 2500));
-          await page.waitForSelector(box, { timeout: 15000 });
-        }
-
-        await page.click(box);
-        await page.type(box, String(hashtag).trim(), { delay: 15 });
-
-        await page.waitForSelector(button, { timeout: 10000 });
-        await page.click(button);
-        await new Promise(r => setTimeout(r, 4000));
-
-        this._log('🏷️ Hashtag comment submitted');
-        return true;
-
-      } finally {
-        await this._close(page);
-        await this._closeBrowser(browser);
       }
-    }, 'submitDualComments');
+
+      await page.click(box);
+      await page.type(box, String(hashtag).trim(), { delay: 15 });
+
+      await page.waitForSelector(button, { timeout: 10000 });
+      await page.click(button);
+      await new Promise(r => setTimeout(r, 4000));
+
+      this._log('🏷️ Hashtag comment submitted');
+      return true;
+
+    } catch (error) {
+      this._error('submitDualComments', error);
+      throw error;
+    } finally {
+      if (page && !page.isClosed()) {
+        try { await page.close(); } catch (e) {}
+      }
+      if (browser && browser.isConnected()) {
+        try { await browser.close(); } catch (e) {}
+      }
+    }
   }
 
   // =========================================================
@@ -610,61 +637,66 @@ class FacebookService {
   async submitCommentAsPage(rawCookies, postUrl, comment, pageId) {
     this._log(`🍪 PAGE COMMENT INPUT: ${Array.isArray(rawCookies) ? rawCookies.length : typeof rawCookies}`);
 
-    return this._retry(async () => {
-      let browser;
-      let page;
+    let browser = null;
+    let page = null;
+
+    try {
+      const url = this._extractPostUrl(postUrl);
+      if (!url) {
+        throw new Error(`POST_URL_ERROR: Invalid URL: ${postUrl}`);
+      }
+
+      browser = await this._launchBrowser();
+      page = await this._createPage(browser, rawCookies);
+
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      });
+
+      await new Promise(r => setTimeout(r, 3000));
+      await this._checkAccess(page);
+
+      const box = 'textarea[name="comment_text"],textarea';
+      const button = 'input[type="submit"][name="post"],input[type="submit"]';
+
+      await page.waitForSelector(box, { timeout: 15000 });
+      await page.click(box);
+      await page.type(box, String(comment).trim(), { delay: 15 });
 
       try {
-        const url = this._postUrl(postUrl);
-        if (!url) {
-          throw new Error(`POST_URL_ERROR: Invalid URL: ${postUrl}`);
-        }
+        const pageSelector = `[data-testid="actor-picker"]`;
+        await page.waitForSelector(pageSelector, { timeout: 5000 });
+        await page.click(pageSelector);
 
-        browser = await this._launchBrowser();
-        page = await this._createPage(browser, rawCookies);
+        const pageOption = `[role="menuitem"]:has-text("${pageId}")`;
+        await page.waitForSelector(pageOption, { timeout: 5000 });
+        await page.click(pageOption);
 
-        await page.goto(url, {
-          waitUntil: 'commit',
-          timeout: 15000
-        });
-
-        await new Promise(r => setTimeout(r, 3000));
-        await this._checkAccess(page);
-
-        const box = 'textarea[name="comment_text"],textarea';
-        const button = 'input[type="submit"][name="post"],input[type="submit"]';
-
-        await page.waitForSelector(box, { timeout: 15000 });
-        await page.click(box);
-        await page.type(box, String(comment).trim(), { delay: 15 });
-
-        try {
-          const pageSelector = `[data-testid="actor-picker"]`;
-          await page.waitForSelector(pageSelector, { timeout: 5000 });
-          await page.click(pageSelector);
-
-          const pageOption = `[role="menuitem"]:has-text("${pageId}")`;
-          await page.waitForSelector(pageOption, { timeout: 5000 });
-          await page.click(pageOption);
-
-          await new Promise(r => setTimeout(r, 1000));
-          this._log(`📄 Commenting as page: ${pageId}`);
-        } catch (e) {
-          this._log('ℹ️ Could not find page selector, commenting as personal');
-        }
-
-        await page.waitForSelector(button, { timeout: 10000 });
-        await page.click(button);
-        await new Promise(r => setTimeout(r, 4000));
-
-        this._log(`✅ Page comment submitted as ${pageId}`);
-        return true;
-
-      } finally {
-        await this._close(page);
-        await this._closeBrowser(browser);
+        await new Promise(r => setTimeout(r, 1000));
+        this._log(`📄 Commenting as page: ${pageId}`);
+      } catch (e) {
+        this._log('ℹ️ Could not find page selector, commenting as personal');
       }
-    }, 'submitCommentAsPage');
+
+      await page.waitForSelector(button, { timeout: 10000 });
+      await page.click(button);
+      await new Promise(r => setTimeout(r, 4000));
+
+      this._log(`✅ Page comment submitted as ${pageId}`);
+      return true;
+
+    } catch (error) {
+      this._error('submitCommentAsPage', error);
+      throw error;
+    } finally {
+      if (page && !page.isClosed()) {
+        try { await page.close(); } catch (e) {}
+      }
+      if (browser && browser.isConnected()) {
+        try { await browser.close(); } catch (e) {}
+      }
+    }
   }
 
   // =========================================================
@@ -730,43 +762,6 @@ class FacebookService {
       console.error(`❌ submitCommentWithErrorHandling error: ${error.message}`);
       return false;
     }
-  }
-
-  // =========================================================
-  // RETRY / CLOSE
-  // =========================================================
-
-  async _retry(fn, name) {
-    let last;
-
-    for (let i = 1; i <= this.maxRetries; i++) {
-      try {
-        this._log(`🔄 ${name} ${i}/${this.maxRetries}`);
-        return await fn();
-      } catch (err) {
-        last = err;
-        this._error(name, err);
-
-        const noRetry = /COOKIE_ERROR|GROUP_URL_ERROR|AUTHENTICATION_ERROR|GROUP_ACCESS_ERROR/.test(err.message || '');
-
-        if (noRetry || i === this.maxRetries) break;
-        await new Promise(r => setTimeout(r, i * 3000));
-      }
-    }
-
-    throw last;
-  }
-
-  async _close(page) {
-    try {
-      if (page && !page.isClosed()) await page.close();
-    } catch {}
-  }
-
-  async _closeBrowser(browser) {
-    try {
-      if (browser?.isConnected()) await browser.close();
-    } catch {}
   }
 }
 
