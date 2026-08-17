@@ -164,20 +164,7 @@ class FacebookService {
 
     try {
       await page.setCookie(...cookies);
-      this._log(`🍪 Loaded ${cookies.length} cookies into Puppeteer`);
-
-      const browserCookies = await page.cookies();
-      const browserCookieNames = browserCookies.map(c => c.name);
-      this._log(`🔎 Puppeteer cookie verification: ${browserCookies.length} | ${browserCookieNames.join(', ')}`);
-
-      const missingInBrowser = cookies
-        .map(c => c.name)
-        .filter(name => !browserCookieNames.includes(name));
-
-      if (missingInBrowser.length) {
-        this._warn(`⚠️ Cookies missing inside Puppeteer: ${missingInBrowser.join(', ')}`);
-      }
-
+      this._log(`🍪 Loaded ${cookies.length} cookies into Puppeteer (on about:blank)`);
     } catch (err) {
       throw new Error(`COOKIE_ERROR: Failed to set cookies: ${err.message}`);
     }
@@ -203,7 +190,6 @@ class FacebookService {
     page.on('requestfailed', req => {
       const type = req.resourceType();
 
-      // تجاهل الموارد التي نلغيها عمداً
       if (type === 'image' || type === 'media' || type === 'font') {
         return;
       }
@@ -289,10 +275,14 @@ class FacebookService {
   _groupUrl(url) {
     try {
       const u = new URL(url);
-      if (!u.hostname.toLowerCase().endsWith('facebook.com') || !u.pathname.includes('/groups/')) {
-        throw new Error('Invalid Facebook group URL');
+      
+      // ✅ التأكد من أن المضيف هو Facebook
+      if (!u.hostname.toLowerCase().includes('facebook.com')) {
+        throw new Error('Invalid Facebook URL');
       }
-      return u.toString();
+
+      // ✅ توحيد الرابط إلى www.facebook.com
+      return `https://www.facebook.com${u.pathname}${u.search}`;
     } catch {
       throw new Error(`GROUP_URL_ERROR: Invalid group URL: ${url}`);
     }
@@ -301,7 +291,7 @@ class FacebookService {
   _postUrl(href) {
     try {
       const u = new URL(href);
-      if (!['facebook.com', 'www.facebook.com'].includes(u.hostname.toLowerCase())) return null;
+      if (!u.hostname.toLowerCase().includes('facebook.com')) return null;
 
       let m = u.pathname.match(/^\/groups\/([^/]+)\/(?:permalink|posts)\/(\d+)\/?/i);
       if (m) {
@@ -354,9 +344,43 @@ class FacebookService {
           throw new Error(`GROUP_ACCESS_ERROR: HTTP ${response.status()}`);
         }
 
-        await new Promise(r => setTimeout(r, 5000));
-        await this._checkAccess(page);
+        // ✅ التحقق من الكوكيز بعد الانتقال إلى Facebook
+        const fbCookies = await page.cookies('https://www.facebook.com/');
+        const fbCookieNames = fbCookies.map(c => c.name);
+        this._log(`🔎 Facebook cookies after navigation: ${fbCookies.length} | ${fbCookieNames.join(', ')}`);
 
+        const required = ['datr', 'c_user', 'xs', 'fr'];
+        const missingAfterNav = required.filter(name => !fbCookieNames.includes(name));
+        if (missingAfterNav.length) {
+          this._warn(`⚠️ Required cookies missing AFTER navigation: ${missingAfterNav.join(', ')}`);
+        } else {
+          this._log(`✅ All required Facebook cookies are present after navigation`);
+        }
+
+        // ✅ التحقق من حالة المصادقة
+        const info = await this._pageInfo(page);
+        console.log('\n========== FACEBOOK AUTH CHECK ==========');
+        console.log('URL:', info.url);
+        console.log('TITLE:', info.title);
+        console.log('LOGIN:', info.login);
+        console.log('CHECKPOINT:', info.checkpoint);
+        console.log('BLOCKED:', info.blocked);
+        console.log('=========================================\n');
+
+        // ✅ إذا كان هناك مشكلة في المصادقة، نرمي خطأ واضح
+        if (info.checkpoint) {
+          throw new Error('AUTHENTICATION_ERROR: Facebook security checkpoint detected');
+        }
+
+        if (info.login && !info.url.includes('/groups/')) {
+          throw new Error('AUTHENTICATION_ERROR: Facebook requires login. Cookies may be expired');
+        }
+
+        if (info.blocked) {
+          throw new Error('GROUP_ACCESS_ERROR: Facebook says this content is unavailable');
+        }
+
+        // تحميل المزيد من المنشورات
         for (let i = 0; i < 6; i++) {
           await page.evaluate(() => window.scrollBy(0, 1000));
           await new Promise(r => setTimeout(r, 1200));
@@ -388,7 +412,6 @@ class FacebookService {
         this._log(`🔎 Total posts found: ${result.length}`);
 
         if (!result.length) {
-          const info = await this._pageInfo(page);
           console.log('\n========== FACEBOOK DEBUG ==========');
           console.log(`URL: ${info.url}`);
           console.log(`TITLE: ${info.title}`);
@@ -397,7 +420,7 @@ class FacebookService {
           console.log(`LOGIN: ${info.login}`);
           console.log(`CHECKPOINT: ${info.checkpoint}`);
           console.log(`BLOCKED: ${info.blocked}`);
-          console.log(`BODY: ${info.text}`);
+          console.log(`BODY (first 500 chars): ${info.text.substring(0, 500)}`);
           console.log('====================================\n');
 
           if (this.debugScreenshot) {
