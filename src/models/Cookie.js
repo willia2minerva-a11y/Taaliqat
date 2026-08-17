@@ -1,5 +1,43 @@
 const mongoose = require('mongoose');
 
+// ✅ Schema لكائن الكوكي الواحد
+const cookieItemSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  value: {
+    type: String,
+    required: true
+  },
+  domain: {
+    type: String,
+    default: '.facebook.com'
+  },
+  path: {
+    type: String,
+    default: '/'
+  },
+  secure: {
+    type: Boolean,
+    default: true
+  },
+  httpOnly: {
+    type: Boolean,
+    default: false
+  },
+  sameSite: {
+    type: String,
+    enum: ['Strict', 'Lax', 'None'],
+    default: 'Lax'
+  },
+  expires: {
+    type: Number,
+    default: null
+  }
+});
+
 // ✅ Schema للصفحات التابعة للحساب
 const pageSchema = new mongoose.Schema({
   pageId: {
@@ -33,7 +71,6 @@ const pageSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
-  // ✅ حقل لتخزين آخر خطأ (مرة واحدة فقط)
   lastError: {
     type: String,
     default: null
@@ -54,9 +91,9 @@ const cookieSchema = new mongoose.Schema({
     unique: true,
     trim: true
   },
+  // ✅ تعريف صحيح لمصفوفة الكوكيز
   cookies: {
-    type: mongoose.Schema.Types.Mixed,
-    required: true,
+    type: [cookieItemSchema],
     default: []
   },
   status: {
@@ -72,22 +109,18 @@ const cookieSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
-  // ✅ الصفحات التابعة للحساب
   pages: {
     type: [pageSchema],
     default: []
   },
-  // عدد التعليقات عبر الحساب الشخصي
   personalCommentsCount: {
     type: Number,
     default: 0
   },
-  // نسبة التعليقات عبر الصفحات (0-100)
   pagesRatio: {
     type: Number,
     default: 60
   },
-  // ✅ حقل لتخزين آخر خطأ للحساب الشخصي
   lastError: {
     type: String,
     default: null
