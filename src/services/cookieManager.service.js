@@ -98,46 +98,7 @@ class CookieManagerService {
   }
 
   // =========================================================
-  // DIAGNOSE ACCOUNTS
-  // =========================================================
-
-  async diagnoseAccounts() {
-    const accounts = await Cookie.find({});
-    console.log(`[COOKIE-MANAGER] 📊 Found ${accounts.length} account(s)`);
-
-    const result = [];
-
-    for (const account of accounts) {
-      const name = account.accountName || 'UNKNOWN';
-      const status = account.status || 'UNKNOWN';
-      const check = this.validateCookies(account.cookies);
-
-      const item = {
-        id: account._id,
-        accountName: name,
-        status,
-        valid: check.valid,
-        reason: check.reason,
-        missing: check.missing,
-        cookieCount: check.cookies.length,
-        cookieNames: check.cookies.map(c => c.name),
-        lastUsedAt: account.lastUsedAt || null,
-        pagesCount: account.pages?.length || 0,
-        cookies: check.cookies
-      };
-
-      result.push(item);
-
-      console.log(
-        `[COOKIE-MANAGER] 👤 Account="${name}" | STATUS=${status} | COOKIE_COUNT=${item.cookieCount} | VALID=${check.valid} | PAGES=${item.pagesCount}`
-      );
-    }
-
-    return result;
-  }
-
-  // =========================================================
-  // GET FIRST VALID ACTIVE ACCOUNT
+  // GET VALID ACTIVE ACCOUNT
   // =========================================================
 
   async getValidActiveAccount() {
@@ -202,6 +163,7 @@ class CookieManagerService {
         lastUsedAt: account.lastUsedAt,
         commentsCount: account.personalCommentsCount || 0,
         status: account.status,
+        lastError: account.lastError || null,
         pages: account.pages.filter(p => p.status === 'ACTIVE')
       });
 
@@ -219,7 +181,8 @@ class CookieManagerService {
             lastUsedAt: page.lastUsedAt,
             commentsCount: page.commentsCount || 0,
             pageAccessToken: page.pageAccessToken,
-            status: page.status
+            status: page.status,
+            lastError: page.lastError || null
           });
         }
       }
@@ -310,6 +273,106 @@ class CookieManagerService {
   }
 
   // =========================================================
+  // ✅ SAVE ERROR FOR IDENTITY (مرة واحدة فقط)
+  // =========================================================
+
+  async saveIdentityError(identity, errorMessage) {
+    try {
+      const now = new Date();
+      const errorText = errorMessage.substring(0, 200);
+
+      if (identity.type === 'personal') {
+        const account = await Cookie.findById(identity.accountId);
+        if (account && account.lastError === errorText) {
+          return; // نفس الخطأ موجود مسبقاً
+        }
+
+        await Cookie.findByIdAndUpdate(
+          identity.accountId,
+          {
+            lastError: errorText,
+            lastErrorTime: now
+          }
+        );
+        console.log(`📝 Error saved for account: ${identity.accountName}`);
+      } 
+      else if (identity.type === 'page') {
+        const account = await Cookie.findOne(
+          { _id: identity.accountId, 'pages.pageId': identity.pageId }
+        );
+        const page = account?.pages?.find(p => p.pageId === identity.pageId);
+        if (page && page.lastError === errorText) {
+          return; // نفس الخطأ موجود مسبقاً
+        }
+
+        await Cookie.findOneAndUpdate(
+          { _id: identity.accountId, 'pages.pageId': identity.pageId },
+          {
+            $set: {
+              'pages.$.lastError': errorText,
+              'pages.$.lastErrorTime': now
+            }
+          }
+        );
+        console.log(`📝 Error saved for page: ${identity.pageName} (${identity.pageId})`);
+      }
+    } catch (err) {
+      console.error(`❌ Failed to save error: ${err.message}`);
+    }
+  }
+
+  // =========================================================
+  // ✅ GET IDENTITY ERROR
+  // =========================================================
+
+  async getIdentityError(identity) {
+    try {
+      if (identity.type === 'personal') {
+        const account = await Cookie.findById(identity.accountId);
+        return account?.lastError || null;
+      } else if (identity.type === 'page') {
+        const account = await Cookie.findOne(
+          { _id: identity.accountId, 'pages.pageId': identity.pageId }
+        );
+        const page = account?.pages?.find(p => p.pageId === identity.pageId);
+        return page?.lastError || null;
+      }
+    } catch (err) {
+      return null;
+    }
+    return null;
+  }
+
+  // =========================================================
+  // ✅ CLEAR ERROR (بعد حل المشكلة)
+  // =========================================================
+
+  async clearIdentityError(identity) {
+    try {
+      if (identity.type === 'personal') {
+        await Cookie.findByIdAndUpdate(
+          identity.accountId,
+          {
+            $unset: { lastError: 1, lastErrorTime: 1 }
+          }
+        );
+      } else if (identity.type === 'page') {
+        await Cookie.findOneAndUpdate(
+          { _id: identity.accountId, 'pages.pageId': identity.pageId },
+          {
+            $unset: {
+              'pages.$.lastError': 1,
+              'pages.$.lastErrorTime': 1
+            }
+          }
+        );
+      }
+    } catch (err) {
+      console.error(`❌ Failed to clear error: ${err.message}`);
+    }
+  }
+
+  // =========================================================
   // ✅ ADD PAGE TO ACCOUNT
   // =========================================================
 
@@ -330,7 +393,9 @@ class CookieManagerService {
       status: 'ACTIVE',
       cooldownUntil: null,
       lastUsedAt: null,
-      commentsCount: 0
+      commentsCount: 0,
+      lastError: null,
+      lastErrorTime: null
     });
 
     await account.save();
@@ -397,6 +462,10 @@ class CookieManagerService {
   // =========================================================
 
   async addCookies(accountName, cookies) {
+    if (!accountName || !String(accountName).trim()) {
+      throw new Error('ACCOUNT_NAME_REQUIRED: Please provide a valid account name');
+    }
+
     const normalized = this.normalizeCookies(cookies);
 
     if (!normalized.length) {
@@ -404,9 +473,9 @@ class CookieManagerService {
     }
 
     return await Cookie.findOneAndUpdate(
-      { accountName },
+      { accountName: accountName.trim() },
       {
-        accountName,
+        accountName: accountName.trim(),
         cookies: normalized,
         status: 'ACTIVE',
         cooldownUntil: null,
