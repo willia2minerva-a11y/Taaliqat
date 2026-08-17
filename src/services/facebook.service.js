@@ -513,3 +513,145 @@ class FacebookService {
         await new Promise(r => setTimeout(r, 3000));
         await this._checkAccess(page);
 
+        const box = 'textarea[name="comment_text"],textarea';
+        const button = 'input[type="submit"][name="post"],input[type="submit"]';
+
+        await page.waitForSelector(box, { timeout: 15000 });
+        await page.click(box);
+        await page.type(box, String(comment).trim(), { delay: 15 });
+
+        // محاولة اختيار النشر كصفحة
+        try {
+          const pageSelector = `[data-testid="actor-picker"]`;
+          await page.waitForSelector(pageSelector, { timeout: 5000 });
+          await page.click(pageSelector);
+
+          const pageOption = `[role="menuitem"]:has-text("${pageId}")`;
+          await page.waitForSelector(pageOption, { timeout: 5000 });
+          await page.click(pageOption);
+
+          await new Promise(r => setTimeout(r, 1000));
+          this._log(`📄 Commenting as page: ${pageId}`);
+        } catch (e) {
+          this._log('ℹ️ Could not find page selector, commenting as personal');
+        }
+
+        await page.waitForSelector(button, { timeout: 10000 });
+        await page.click(button);
+        await new Promise(r => setTimeout(r, 4000));
+
+        this._log(`✅ Page comment submitted as ${pageId}`);
+        return true;
+
+      } finally {
+        await this._close(page);
+        await this._closeBrowser(browser);
+      }
+    }, 'submitCommentAsPage');
+  }
+
+  // =========================================================
+  // ✅ COMMENT WITH ERROR HANDLING AND REPORT
+  // =========================================================
+
+  async submitCommentWithErrorHandling(identity, postUrl, comment, hashtag, messengerService, adminId) {
+    try {
+      let success = false;
+      let errorMessage = null;
+
+      try {
+        if (identity.type === 'page') {
+          success = await this.submitCommentAsPage(
+            identity.cookies,
+            postUrl,
+            comment,
+            identity.pageId
+          );
+        } else {
+          success = await this.submitDualComments(
+            identity.cookies,
+            postUrl,
+            comment,
+            hashtag
+          );
+        }
+      } catch (error) {
+        errorMessage = error.message;
+        console.error(`❌ ${identity.type === 'page' ? '📄' : '👤'} ${identity.accountName}${identity.pageName ? ' - ' + identity.pageName : ''} failed: ${errorMessage}`);
+      }
+
+      if (!success && errorMessage) {
+        // ✅ تخزين الخطأ في قاعدة البيانات (مرة واحدة)
+        await cookieManagerService.saveIdentityError(identity, errorMessage);
+
+        // ✅ إرسال رسالة للمسؤول (مرة واحدة فقط)
+        const existingError = await cookieManagerService.getIdentityError(identity);
+        if (!existingError) {
+          const identityName = identity.type === 'page' 
+            ? `صفحة: ${identity.pageName} (${identity.pageId})` 
+            : `حساب: ${identity.accountName}`;
+          
+          await messengerService.sendTextMessage(
+            adminId,
+            `⚠️ **فشل التعليق عبر ${identityName}**\n\n` +
+            `📌 المنشور: ${postUrl}\n` +
+            `❌ السبب: ${errorMessage.substring(0, 150)}\n\n` +
+            `🔄 سيتم تخطي هذه الهوية واستخدام التالية.`
+          );
+        }
+
+        return false;
+      }
+
+      if (success) {
+        // ✅ إذا نجح، امسح أي خطأ سابق
+        await cookieManagerService.clearIdentityError(identity);
+      }
+
+      return success;
+
+    } catch (error) {
+      console.error(`❌ submitCommentWithErrorHandling error: ${error.message}`);
+      return false;
+    }
+  }
+
+  // =========================================================
+  // RETRY / CLOSE
+  // =========================================================
+
+  async _retry(fn, name) {
+    let last;
+
+    for (let i = 1; i <= this.maxRetries; i++) {
+      try {
+        this._log(`🔄 ${name} ${i}/${this.maxRetries}`);
+        return await fn();
+      } catch (err) {
+        last = err;
+        this._error(name, err);
+
+        const noRetry = /COOKIE_ERROR|GROUP_URL_ERROR|AUTHENTICATION_ERROR|GROUP_ACCESS_ERROR/.test(err.message || '');
+
+        if (noRetry || i === this.maxRetries) break;
+        await new Promise(r => setTimeout(r, i * 3000));
+      }
+    }
+
+    throw last;
+  }
+
+  async _close(page) {
+    try {
+      if (page && !page.isClosed()) await page.close();
+    } catch {}
+  }
+
+  async _closeBrowser(browser) {
+    try {
+      if (browser?.isConnected()) await browser.close();
+    } catch {}
+  }
+}
+
+module.exports = new FacebookService();
