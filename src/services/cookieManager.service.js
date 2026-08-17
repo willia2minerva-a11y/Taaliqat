@@ -98,6 +98,92 @@ class CookieManagerService {
   }
 
   // =========================================================
+  // ✅ ADD / UPDATE ACCOUNT (مع دعم صيغ متعددة)
+  // =========================================================
+
+  async addCookies(accountName, cookiesInput) {
+    if (!accountName || !String(accountName).trim()) {
+      throw new Error('ACCOUNT_NAME_REQUIRED: Please provide a valid account name');
+    }
+
+    // ✅ تحويل المدخلات إلى مصفوفة كوكيز
+    let cookiesArray = [];
+
+    if (typeof cookiesInput === 'string') {
+      // ✅ تقسيم النص إلى أزواج name=value
+      const pairs = cookiesInput.split(';').map(p => p.trim()).filter(Boolean);
+      
+      for (const pair of pairs) {
+        const equalIndex = pair.indexOf('=');
+        if (equalIndex > 0) {
+          const name = pair.substring(0, equalIndex).trim();
+          const value = pair.substring(equalIndex + 1).trim();
+          if (name && value) {
+            cookiesArray.push({
+              name: name,
+              value: value,
+              domain: '.facebook.com',
+              path: '/',
+              secure: true,
+              httpOnly: false
+            });
+          }
+        }
+      }
+    } else if (Array.isArray(cookiesInput)) {
+      cookiesArray = cookiesInput.map(c => ({
+        name: String(c.name).trim(),
+        value: String(c.value),
+        domain: c.domain || '.facebook.com',
+        path: c.path || '/',
+        secure: c.secure !== false,
+        httpOnly: Boolean(c.httpOnly)
+      }));
+    } else {
+      throw new Error('COOKIE_ERROR: Invalid cookie format. Expected string or array.');
+    }
+
+    // ✅ التحقق من وجود كوكيز
+    if (!cookiesArray.length) {
+      throw new Error('COOKIE_ERROR: No valid cookies extracted');
+    }
+
+    // ✅ طباعة أسماء الكوكيز للتصحيح
+    const names = cookiesArray.map(c => c.name);
+    console.log(`[COOKIE-MANAGER] 📝 Extracted cookies: ${names.join(', ')}`);
+
+    // ✅ التحقق من وجود الكوكيز الأساسية (تحذير فقط)
+    const required = ['datr', 'c_user', 'xs', 'fr'];
+    const missing = required.filter(r => !names.includes(r));
+    
+    if (missing.length) {
+      console.warn(`[COOKIE-MANAGER] ⚠️ Missing required cookies: ${missing.join(', ')}`);
+      console.warn(`[COOKIE-MANAGER] ⚠️ Found: ${names.join(', ')}`);
+    }
+
+    // ✅ تخزين الكوكيز في قاعدة البيانات (استبدال كامل)
+    const result = await Cookie.findOneAndUpdate(
+      { accountName: accountName.trim() },
+      {
+        accountName: accountName.trim(),
+        cookies: cookiesArray,
+        status: 'ACTIVE',
+        cooldownUntil: null,
+        lastUsedAt: new Date(),
+        // ✅ إزالة أي أخطاء سابقة عند التحديث
+        $unset: { lastError: 1, lastErrorTime: 1 }
+      },
+      {
+        new: true,
+        upsert: true
+      }
+    );
+
+    console.log(`[COOKIE-MANAGER] ✅ Account "${accountName}" saved with ${cookiesArray.length} cookies`);
+    return result;
+  }
+
+  // =========================================================
   // GET VALID ACTIVE ACCOUNT
   // =========================================================
 
@@ -284,7 +370,7 @@ class CookieManagerService {
       if (identity.type === 'personal') {
         const account = await Cookie.findById(identity.accountId);
         if (account && account.lastError === errorText) {
-          return; // نفس الخطأ موجود مسبقاً
+          return;
         }
 
         await Cookie.findByIdAndUpdate(
@@ -302,7 +388,7 @@ class CookieManagerService {
         );
         const page = account?.pages?.find(p => p.pageId === identity.pageId);
         if (page && page.lastError === errorText) {
-          return; // نفس الخطأ موجود مسبقاً
+          return;
         }
 
         await Cookie.findOneAndUpdate(
@@ -455,37 +541,6 @@ class CookieManagerService {
       console.error(`[COOKIE-MANAGER][ERROR] ${error.message}`);
       return [];
     }
-  }
-
-  // =========================================================
-  // ✅ ADD / UPDATE ACCOUNT
-  // =========================================================
-
-  async addCookies(accountName, cookies) {
-    if (!accountName || !String(accountName).trim()) {
-      throw new Error('ACCOUNT_NAME_REQUIRED: Please provide a valid account name');
-    }
-
-    const normalized = this.normalizeCookies(cookies);
-
-    if (!normalized.length) {
-      throw new Error('COOKIE_ERROR: No valid cookies supplied');
-    }
-
-    return await Cookie.findOneAndUpdate(
-      { accountName: accountName.trim() },
-      {
-        accountName: accountName.trim(),
-        cookies: normalized,
-        status: 'ACTIVE',
-        cooldownUntil: null,
-        lastUsedAt: new Date()
-      },
-      {
-        new: true,
-        upsert: true
-      }
-    );
   }
 
   // =========================================================
