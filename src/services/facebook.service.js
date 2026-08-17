@@ -140,7 +140,7 @@ class FacebookService {
   }
 
   // =========================================================
-  // PAGE
+  // PAGE (بدون req.abort() للصور والوسائط)
   // =========================================================
 
   async _createPage(browser, rawCookies) {
@@ -169,34 +169,23 @@ class FacebookService {
       throw new Error(`COOKIE_ERROR: Failed to set cookies: ${err.message}`);
     }
 
+    // ✅ إعداد اعتراض الطلبات - بدون req.abort() للصور
     await page.setRequestInterception(true);
 
     page.on('request', req => {
       try {
         if (req.isInterceptResolutionHandled?.()) return;
-
-        const type = req.resourceType();
-
-        if (type === 'image' || type === 'media' || type === 'font') {
-          return req.abort();
-        }
-
-        return req.continue();
+        req.continue();
       } catch {}
     });
 
+    // ✅ تسجيل الطلبات الفاشلة (لن تظهر ERR_FAILED للصور الآن)
     page.on('requestfailed', req => {
-      const type = req.resourceType();
-
-      if (type === 'image' || type === 'media' || type === 'font') {
-        return;
-      }
-
       const failure = req.failure();
       console.log(
         `[FACEBOOK][REQUEST_FAILED]`,
         JSON.stringify({
-          type: type,
+          type: req.resourceType(),
           method: req.method(),
           error: failure?.errorText || 'UNKNOWN',
           url: req.url().substring(0, 300)
@@ -204,6 +193,7 @@ class FacebookService {
       );
     });
 
+    // ✅ تسجيل أخطاء HTTP
     page.on('response', response => {
       const status = response.status();
       if (status >= 400) {
@@ -272,11 +262,9 @@ class FacebookService {
   _groupUrl(url) {
     try {
       const u = new URL(url);
-      
       if (!u.hostname.toLowerCase().includes('facebook.com')) {
         throw new Error('Invalid Facebook URL');
       }
-
       return `https://www.facebook.com${u.pathname}${u.search}`;
     } catch {
       throw new Error(`GROUP_URL_ERROR: Invalid group URL: ${url}`);
@@ -335,6 +323,10 @@ class FacebookService {
           throw new Error(`NAVIGATION_ERROR: ${err.message}`);
         }
 
+        this._log(`🌐 Navigation response: ${response?.status() || 'NO_RESPONSE'}`);
+        this._log(`🌐 Final URL: ${page.url()}`);
+        this._log(`📄 Final title: ${await page.title()}`);
+
         if (response && response.status() >= 400) {
           throw new Error(`GROUP_ACCESS_ERROR: HTTP ${response.status()}`);
         }
@@ -351,6 +343,47 @@ class FacebookService {
         } else {
           this._log(`✅ All required Facebook cookies are present after navigation`);
         }
+
+        // ✅ انتظار تحميل الشبكة
+        await page.waitForNetworkIdle({
+          idleTime: 1500,
+          timeout: 15000
+        }).catch(() => {});
+
+        await new Promise(r => setTimeout(r, 3000));
+
+        // ✅ التشخيص المتقدم للصفحة
+        const state = await page.evaluate(() => {
+          const links = [...document.querySelectorAll('a[href]')]
+            .map(a => ({
+              href: a.href,
+              text: (a.innerText || '').trim()
+            }))
+            .filter(x => x.href);
+
+          const postLinks = links.filter(x =>
+            /\/groups\/[^/]+\/(permalink|posts)\//i.test(x.href)
+          );
+
+          return {
+            url: location.href,
+            title: document.title,
+            bodyLength: document.body?.innerText?.length || 0,
+            links: links.length,
+            postLinks: [...new Set(postLinks.map(x => x.href))].slice(0, 100),
+            articles: document.querySelectorAll('article').length,
+            roleArticles: document.querySelectorAll('[role="article"]').length,
+            feed: document.querySelectorAll('[role="feed"]').length,
+            main: document.querySelectorAll('main').length,
+            text: (document.body?.innerText || '')
+              .replace(/\s+/g, ' ')
+              .slice(0, 1500)
+          };
+        });
+
+        console.log('\n========== FACEBOOK PAGE STATE ==========');
+        console.log(JSON.stringify(state, null, 2));
+        console.log('=========================================\n');
 
         // ✅ التحقق من حالة المصادقة
         const info = await this._pageInfo(page);
@@ -374,52 +407,6 @@ class FacebookService {
           throw new Error('GROUP_ACCESS_ERROR: Facebook says this content is unavailable');
         }
 
-        // ✅ انتظار تحميل المحتوى
-        await new Promise(r => setTimeout(r, 3000));
-
-        // ✅ التمرير لتحميل المزيد
-        for (let i = 0; i < 8; i++) {
-          await page.evaluate(() => window.scrollBy(0, 1200));
-          await new Promise(r => setTimeout(r, 1500));
-        }
-
-        // ✅ التشخيص المتقدم: ما الذي يراه Puppeteer؟
-        const diagnostics = await page.evaluate(() => {
-          const links = [...document.querySelectorAll('a[href]')]
-            .map(a => ({
-              href: a.href,
-              text: (a.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 150)
-            }))
-            .filter(x => x.href);
-
-          const groupLinks = links.filter(x =>
-            x.href.includes('/groups/')
-          );
-
-          const permalinkLinks = links.filter(x =>
-            x.href.includes('/permalink/') ||
-            x.href.includes('/posts/')
-          );
-
-          return {
-            url: location.href,
-            title: document.title,
-            totalLinks: links.length,
-            groupLinks: groupLinks.slice(0, 30).map(x => x.href),
-            permalinkLinks: permalinkLinks.slice(0, 30).map(x => x.href),
-            articleCount: document.querySelectorAll(
-              'article,[role="article"]'
-            ).length,
-            bodyLength: document.body?.innerText?.length || 0,
-            hasFeed: !!document.querySelector('[role="feed"]'),
-            hasMain: !!document.querySelector('main')
-          };
-        });
-
-        console.log('\n========== POST DISCOVERY DIAGNOSTICS ==========');
-        console.log(JSON.stringify(diagnostics, null, 2));
-        console.log('================================================\n');
-
         // ✅ استخراج الروابط من عدة مصادر
         const posts = new Set();
 
@@ -433,7 +420,7 @@ class FacebookService {
           if (p) posts.add(p);
         }
 
-        // 2. البحث في HTML الخام عن روابط المنشورات
+        // 2. البحث في HTML الخام
         const html = await page.content();
         const matches = html.match(/(?:https?:\/\/(?:www\.)?facebook\.com)?\/groups\/[^"'\\<>\s]+\/(?:permalink|posts)\/\d+\/?/gi) || [];
 
@@ -443,28 +430,6 @@ class FacebookService {
           }
           const p = this._postUrl(link);
           if (p) posts.add(p);
-        }
-
-        // 3. البحث عن IDs في العناصر (بديل)
-        const postIds = await page.evaluate(() => {
-          const ids = [];
-          const elements = document.querySelectorAll('[data-ft]');
-          for (const el of elements) {
-            const ft = el.getAttribute('data-ft');
-            if (ft && ft.includes('"top_level_post_id"')) {
-              try {
-                const parsed = JSON.parse(ft);
-                if (parsed.top_level_post_id) {
-                  ids.push(parsed.top_level_post_id);
-                }
-              } catch {}
-            }
-          }
-          return ids;
-        });
-
-        for (const id of postIds) {
-          posts.add(`https://www.facebook.com/groups/${groupUrl.split('/groups/')[1]?.split('/')[0]}/permalink/${id}/`);
         }
 
         const result = [...posts];
