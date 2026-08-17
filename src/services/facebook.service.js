@@ -149,6 +149,10 @@ class FacebookService {
       throw new Error('BROWSER_ERROR: Browser is disconnected');
     }
 
+    // ✅ التشخيص: عدد الكوكيز الداخلة إلى _createPage
+    const inputCount = Array.isArray(rawCookies) ? rawCookies.length : (typeof rawCookies === 'string' ? 'string' : 'unknown');
+    this._log(`🍪 _createPage INPUT: ${inputCount}`);
+
     const page = await browser.newPage();
     page.setDefaultNavigationTimeout(this.navigationTimeout);
     page.setDefaultTimeout(this.actionTimeout);
@@ -162,7 +166,21 @@ class FacebookService {
 
     try {
       await page.setCookie(...cookies);
-      this._log(`🍪 Loaded ${cookies.length} cookies`);
+      this._log(`🍪 Loaded ${cookies.length} cookies into Puppeteer`);
+
+      // ✅ التشخيص: التحقق من الكوكيز داخل Puppeteer
+      const browserCookies = await page.cookies();
+      const browserCookieNames = browserCookies.map(c => c.name);
+      this._log(`🔎 Puppeteer cookie verification: ${browserCookies.length} | ${browserCookieNames.join(', ')}`);
+
+      const missingInBrowser = cookies
+        .map(c => c.name)
+        .filter(name => !browserCookieNames.includes(name));
+
+      if (missingInBrowser.length) {
+        this._warn(`⚠️ Cookies missing inside Puppeteer: ${missingInBrowser.join(', ')}`);
+      }
+
     } catch (err) {
       throw new Error(`COOKIE_ERROR: Failed to set cookies: ${err.message}`);
     }
@@ -272,6 +290,9 @@ class FacebookService {
   // =========================================================
 
   async discoverPendingPosts(rawCookies, groupUrl) {
+    // ✅ التشخيص: عدد الكوكيز الداخلة إلى discoverPendingPosts
+    this._log(`🍪 DISCOVERY INPUT: ${Array.isArray(rawCookies) ? rawCookies.length : typeof rawCookies}`);
+
     return this._retry(async () => {
       let browser;
       let page;
@@ -370,6 +391,9 @@ class FacebookService {
   // =========================================================
 
   async fetchPostText(rawCookies, postUrl) {
+    // ✅ التشخيص: عدد الكوكيز الداخلة إلى fetchPostText
+    this._log(`🍪 FETCH POST INPUT: ${Array.isArray(rawCookies) ? rawCookies.length : typeof rawCookies}`);
+
     return this._retry(async () => {
       let browser;
       let page;
@@ -420,6 +444,9 @@ class FacebookService {
   // =========================================================
 
   async submitDualComments(rawCookies, postUrl, aiComment, hashtag) {
+    // ✅ التشخيص: عدد الكوكيز الداخلة إلى submitDualComments
+    this._log(`🍪 COMMENT INPUT: ${Array.isArray(rawCookies) ? rawCookies.length : typeof rawCookies}`);
+
     return this._retry(async () => {
       let browser;
       let page;
@@ -492,6 +519,9 @@ class FacebookService {
   // =========================================================
 
   async submitCommentAsPage(rawCookies, postUrl, comment, pageId) {
+    // ✅ التشخيص: عدد الكوكيز الداخلة إلى submitCommentAsPage
+    this._log(`🍪 PAGE COMMENT INPUT: ${Array.isArray(rawCookies) ? rawCookies.length : typeof rawCookies}`);
+
     return this._retry(async () => {
       let browser;
       let page;
@@ -551,10 +581,13 @@ class FacebookService {
   }
 
   // =========================================================
-  // ✅ COMMENT WITH ERROR HANDLING AND REPORT
+  // ✅ COMMENT WITH ERROR HANDLING (مع إضافة cookieManagerService)
   // =========================================================
 
   async submitCommentWithErrorHandling(identity, postUrl, comment, hashtag, messengerService, adminId) {
+    // ✅ استيراد cookieManagerService داخل الدالة لتجنب مشاكل التحميل الدائري
+    const cookieManagerService = require('./cookieManager.service');
+
     try {
       let success = false;
       let errorMessage = null;
@@ -581,10 +614,8 @@ class FacebookService {
       }
 
       if (!success && errorMessage) {
-        // ✅ تخزين الخطأ في قاعدة البيانات (مرة واحدة)
         await cookieManagerService.saveIdentityError(identity, errorMessage);
 
-        // ✅ إرسال رسالة للمسؤول (مرة واحدة فقط)
         const existingError = await cookieManagerService.getIdentityError(identity);
         if (!existingError) {
           const identityName = identity.type === 'page' 
@@ -604,7 +635,6 @@ class FacebookService {
       }
 
       if (success) {
-        // ✅ إذا نجح، امسح أي خطأ سابق
         await cookieManagerService.clearIdentityError(identity);
       }
 
