@@ -91,7 +91,6 @@ const cookieSchema = new mongoose.Schema({
     unique: true,
     trim: true
   },
-  // ✅ تعريف صحيح لمصفوفة الكوكيز
   cookies: {
     type: [cookieItemSchema],
     default: []
