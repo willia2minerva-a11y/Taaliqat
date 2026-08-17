@@ -24,11 +24,13 @@ class JobService {
   async startNewJob(targetCount, groupUrl, customHashtag) {
     let job = await this.getOrCreateJob();
     job.isRunning = true;
+    job.status = 'RUNNING';
     job.totalTarget = targetCount;
     job.completedCount = 0;
     job.groupUrl = groupUrl;
     job.customHashtag = customHashtag;
     job.pendingPosts = [];
+    job.errorReason = null;
     await job.save();
     console.log(`🚀 Job started: ${targetCount} posts, group: ${groupUrl}`);
     return job;
@@ -37,6 +39,7 @@ class JobService {
   async stopJob() {
     let job = await this.getOrCreateJob();
     job.isRunning = false;
+    job.status = 'STOPPED';
     job.pendingPosts = [];
     await job.save();
     console.log('🛑 Job stopped');
@@ -44,11 +47,10 @@ class JobService {
   }
 
   // =========================================================
-  // ✅ GET NEXT TARGET (identity + post)
+  // GET NEXT TARGET
   // =========================================================
 
   async getNextTarget() {
-    // ✅ استخدام الحساب الشخصي فقط لاكتشاف المنشورات
     const account = await cookieManagerService.getValidActiveAccount();
     if (!account || !account.cookies) {
       console.log('⏳ No valid active account available for discovery');
@@ -64,16 +66,15 @@ class JobService {
     if (job.completedCount >= job.totalTarget) {
       console.log('✅ Job completed');
       job.isRunning = false;
+      job.status = 'COMPLETED';
       await job.save();
       return null;
     }
 
-    // جلب منشور تالٍ
     let postUrl = null;
     if (job.pendingPosts.length > 0) {
       postUrl = job.pendingPosts.shift();
     } else {
-      // ✅ اكتشاف منشورات جديدة باستخدام الحساب الشخصي فقط
       const posts = await facebookService.discoverPendingPosts(
         account.cookies,
         job.groupUrl,
@@ -92,11 +93,9 @@ class JobService {
 
     await job.save();
 
-    // ✅ اختيار هوية للتعليق (يمكن أن تكون صفحة أو حساب شخصي)
     const identity = await cookieManagerService.getNextAvailableIdentity();
     if (!identity) {
       console.log('⏳ No available identity for commenting');
-      // إعادة المنشور إلى القائمة
       job.pendingPosts.unshift(postUrl);
       await job.save();
       return null;
@@ -111,7 +110,7 @@ class JobService {
   }
 
   // =========================================================
-  // ✅ EXECUTE NEXT TASK WITH ERROR HANDLING
+  // EXECUTE NEXT TASK
   // =========================================================
 
   async executeNextTask() {
@@ -124,7 +123,6 @@ class JobService {
       const { identity, postUrl, job } = target;
       console.log(`🎯 Target: ${identity.type} ${identity.accountName}${identity.pageName ? ' - ' + identity.pageName : ''} - Post: ${postUrl}`);
 
-      // جلب نص المنشور
       let postText;
       try {
         postText = await facebookService.fetchPostText(identity.cookies, postUrl);
@@ -138,13 +136,11 @@ class JobService {
         }
       }
 
-      // توليد تعليق
       const aiComment = await geminiService.generateSmartComment(
         postText,
         process.env.GEMINI_API_KEY
       );
 
-      // ✅ التعليق مع معالجة الأخطاء وإرسال التقارير
       const adminId = process.env.ADMIN_FB_ID || process.env.ADMIN_ID;
       const success = await facebookService.submitCommentWithErrorHandling(
         identity,
@@ -156,13 +152,11 @@ class JobService {
       );
 
       if (success) {
-        // تحديث الإحصائيات
         await cookieManagerService.updateIdentityUsage(identity);
         job.visitedPosts.push(postUrl);
         job.completedCount += 1;
         await job.save();
 
-        // ضبط كولداون
         const cooldownMinutes = identity.type === 'page' ? 5 : 10;
         await cookieManagerService.setCooldown(identity, cooldownMinutes);
 
@@ -170,7 +164,6 @@ class JobService {
       } else {
         console.log(`⏭️ Skipped identity: ${identity.type} ${identity.accountName}${identity.pageName ? ' - ' + identity.pageName : ''}`);
         
-        // ✅ إعادة المنشور إلى القائمة لتجربة هوية أخرى
         if (!job.pendingPosts.includes(postUrl)) {
           job.pendingPosts.push(postUrl);
           await job.save();
@@ -179,6 +172,22 @@ class JobService {
 
     } catch (error) {
       console.error(`❌ executeNextTask error: ${error.message}`);
+      
+      // ✅ تصنيف الأخطاء وتحديث حالة المهمة
+      const job = await this.getOrCreateJob();
+      if (error.message.includes('AUTHENTICATION_ERROR') || error.message.includes('LOGIN_PAGE')) {
+        job.isRunning = false;
+        job.status = 'AUTH_FAILED';
+        job.errorReason = error.message;
+        await job.save();
+        console.log(`🔐 Authentication failed. Job marked as AUTH_FAILED`);
+      } else if (error.message.includes('NO_VALID_ACCOUNT')) {
+        job.isRunning = false;
+        job.status = 'NO_ACCOUNT';
+        job.errorReason = error.message;
+        await job.save();
+        console.log(`❌ No valid account. Job marked as NO_ACCOUNT`);
+      }
     }
   }
 }
