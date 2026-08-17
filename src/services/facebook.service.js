@@ -112,8 +112,7 @@ class FacebookService {
           '--disable-features=IsolateOrigins,site-per-process',
           '--disable-background-timer-throttling',
           '--disable-backgrounding-occluded-windows',
-          '--disable-renderer-backgrounding',
-          '--max_old_space_size=128'
+          '--disable-renderer-backgrounding'
         ],
         defaultViewport: {
           width: 1280,
@@ -185,6 +184,7 @@ class FacebookService {
       throw new Error(`COOKIE_ERROR: Failed to set cookies: ${err.message}`);
     }
 
+    // ✅ إعداد اعتراض الطلبات
     await page.setRequestInterception(true);
 
     page.on('request', req => {
@@ -192,6 +192,30 @@ class FacebookService {
         if (req.isInterceptResolutionHandled?.()) return;
         ['image', 'media', 'font'].includes(req.resourceType()) ? req.abort() : req.continue();
       } catch {}
+    });
+
+    // ✅ التشخيص: تسجيل FAILED REQUESTS مع التفاصيل
+    page.on('requestfailed', req => {
+      const failure = req.failure();
+      console.log(
+        `[FACEBOOK][REQUEST_FAILED]`,
+        JSON.stringify({
+          type: req.resourceType(),
+          method: req.method(),
+          error: failure?.errorText || 'UNKNOWN',
+          url: req.url().substring(0, 300)
+        })
+      );
+    });
+
+    // ✅ التشخيص: تسجيل HTTP ERRORS
+    page.on('response', response => {
+      const status = response.status();
+      if (status >= 400) {
+        console.log(
+          `[FACEBOOK][HTTP_ERROR] ${status} | ${response.url().substring(0, 300)}`
+        );
+      }
     });
 
     page.on('pageerror', err => this._debug('Page error:', err.message));
@@ -290,7 +314,6 @@ class FacebookService {
   // =========================================================
 
   async discoverPendingPosts(rawCookies, groupUrl) {
-    // ✅ التشخيص: عدد الكوكيز الداخلة إلى discoverPendingPosts
     this._log(`🍪 DISCOVERY INPUT: ${Array.isArray(rawCookies) ? rawCookies.length : typeof rawCookies}`);
 
     return this._retry(async () => {
@@ -322,7 +345,6 @@ class FacebookService {
         await new Promise(r => setTimeout(r, 5000));
         await this._checkAccess(page);
 
-        // تحميل المزيد
         for (let i = 0; i < 6; i++) {
           await page.evaluate(() => window.scrollBy(0, 1000));
           await new Promise(r => setTimeout(r, 1200));
@@ -391,7 +413,6 @@ class FacebookService {
   // =========================================================
 
   async fetchPostText(rawCookies, postUrl) {
-    // ✅ التشخيص: عدد الكوكيز الداخلة إلى fetchPostText
     this._log(`🍪 FETCH POST INPUT: ${Array.isArray(rawCookies) ? rawCookies.length : typeof rawCookies}`);
 
     return this._retry(async () => {
@@ -444,7 +465,6 @@ class FacebookService {
   // =========================================================
 
   async submitDualComments(rawCookies, postUrl, aiComment, hashtag) {
-    // ✅ التشخيص: عدد الكوكيز الداخلة إلى submitDualComments
     this._log(`🍪 COMMENT INPUT: ${Array.isArray(rawCookies) ? rawCookies.length : typeof rawCookies}`);
 
     return this._retry(async () => {
@@ -515,11 +535,10 @@ class FacebookService {
   }
 
   // =========================================================
-  // ✅ COMMENT AS PAGE
+  // COMMENT AS PAGE
   // =========================================================
 
   async submitCommentAsPage(rawCookies, postUrl, comment, pageId) {
-    // ✅ التشخيص: عدد الكوكيز الداخلة إلى submitCommentAsPage
     this._log(`🍪 PAGE COMMENT INPUT: ${Array.isArray(rawCookies) ? rawCookies.length : typeof rawCookies}`);
 
     return this._retry(async () => {
@@ -550,7 +569,6 @@ class FacebookService {
         await page.click(box);
         await page.type(box, String(comment).trim(), { delay: 15 });
 
-        // محاولة اختيار النشر كصفحة
         try {
           const pageSelector = `[data-testid="actor-picker"]`;
           await page.waitForSelector(pageSelector, { timeout: 5000 });
@@ -581,11 +599,10 @@ class FacebookService {
   }
 
   // =========================================================
-  // ✅ COMMENT WITH ERROR HANDLING (مع إضافة cookieManagerService)
+  // COMMENT WITH ERROR HANDLING
   // =========================================================
 
   async submitCommentWithErrorHandling(identity, postUrl, comment, hashtag, messengerService, adminId) {
-    // ✅ استيراد cookieManagerService داخل الدالة لتجنب مشاكل التحميل الدائري
     const cookieManagerService = require('./cookieManager.service');
 
     try {
