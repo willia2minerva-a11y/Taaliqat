@@ -2,7 +2,7 @@ const puppeteer = require('puppeteer');
 
 class FacebookService {
   constructor() {
-    this.navigationTimeout = 35000;
+    this.navigationTimeout = 60000; // ✅ زيادة إلى 60 ثانية
     this.actionTimeout = 20000;
     this.maxRetries = 2;
 
@@ -140,7 +140,7 @@ class FacebookService {
   }
 
   // =========================================================
-  // PAGE (بدون req.abort() للصور والوسائط)
+  // PAGE (بدون req.abort() - للتشخيص)
   // =========================================================
 
   async _createPage(browser, rawCookies) {
@@ -169,7 +169,7 @@ class FacebookService {
       throw new Error(`COOKIE_ERROR: Failed to set cookies: ${err.message}`);
     }
 
-    // ✅ إعداد اعتراض الطلبات - بدون req.abort() للصور
+    // ✅ اعتراض الطلبات - بدون req.abort() للتشخيص
     await page.setRequestInterception(true);
 
     page.on('request', req => {
@@ -179,7 +179,7 @@ class FacebookService {
       } catch {}
     });
 
-    // ✅ تسجيل الطلبات الفاشلة (لن تظهر ERR_FAILED للصور الآن)
+    // ✅ تسجيل الطلبات الفاشلة
     page.on('requestfailed', req => {
       const failure = req.failure();
       console.log(
@@ -295,7 +295,7 @@ class FacebookService {
   }
 
   // =========================================================
-  // DISCOVER POSTS (محسّن مع تشخيص متقدم)
+  // DISCOVER POSTS (مع waitUntil: 'commit' ومعالجة timeout)
   // =========================================================
 
   async discoverPendingPosts(rawCookies, groupUrl) {
@@ -315,21 +315,39 @@ class FacebookService {
 
         let response;
         try {
+          // ✅ استخدام waitUntil: 'commit' بدلاً من 'domcontentloaded'
           response = await page.goto(url, {
-            waitUntil: 'domcontentloaded',
-            timeout: this.navigationTimeout
+            waitUntil: 'commit',
+            timeout: 15000
           });
+
+          this._log(`🌐 Navigation committed | HTTP=${response?.status() || 'unknown'}`);
+
         } catch (err) {
-          throw new Error(`NAVIGATION_ERROR: ${err.message}`);
+          this._error('NAVIGATION', err);
+
+          this._log(`🌐 URL at failure: ${page.url()}`);
+
+          // ✅ إذا وصلنا فعلياً إلى Facebook، لا نعتبر timeout فشلاً مباشراً
+          if (
+            page.url().includes('facebook.com') &&
+            !page.isClosed()
+          ) {
+            this._warn('⚠️ Navigation timeout but Facebook page exists. Continuing diagnostics...');
+          } else {
+            throw new Error(`NAVIGATION_ERROR: ${err.message}`);
+          }
         }
 
-        this._log(`🌐 Navigation response: ${response?.status() || 'NO_RESPONSE'}`);
+        // ✅ انتظار إضافي للسماح بتحميل المحتوى
+        await new Promise(resolve => setTimeout(resolve, 8000));
+
+        if (page.isClosed()) {
+          throw new Error('BROWSER_ERROR: Page closed during Facebook navigation');
+        }
+
         this._log(`🌐 Final URL: ${page.url()}`);
-        this._log(`📄 Final title: ${await page.title()}`);
-
-        if (response && response.status() >= 400) {
-          throw new Error(`GROUP_ACCESS_ERROR: HTTP ${response.status()}`);
-        }
+        this._log(`📄 Title: ${await page.title()}`);
 
         // ✅ التحقق من الكوكيز بعد الانتقال
         const fbCookies = await page.cookies('https://www.facebook.com/');
@@ -343,14 +361,6 @@ class FacebookService {
         } else {
           this._log(`✅ All required Facebook cookies are present after navigation`);
         }
-
-        // ✅ انتظار تحميل الشبكة
-        await page.waitForNetworkIdle({
-          idleTime: 1500,
-          timeout: 15000
-        }).catch(() => {});
-
-        await new Promise(r => setTimeout(r, 3000));
 
         // ✅ التشخيص المتقدم للصفحة
         const state = await page.evaluate(() => {
@@ -488,8 +498,8 @@ class FacebookService {
         page = await this._createPage(browser, rawCookies);
 
         await page.goto(url, {
-          waitUntil: 'domcontentloaded',
-          timeout: this.navigationTimeout
+          waitUntil: 'commit',
+          timeout: 15000
         });
 
         await new Promise(r => setTimeout(r, 3000));
@@ -548,8 +558,8 @@ class FacebookService {
         page = await this._createPage(browser, rawCookies);
 
         await page.goto(url, {
-          waitUntil: 'domcontentloaded',
-          timeout: this.navigationTimeout
+          waitUntil: 'commit',
+          timeout: 15000
         });
 
         await new Promise(r => setTimeout(r, 3000));
@@ -571,7 +581,7 @@ class FacebookService {
         try {
           await page.waitForSelector(box, { timeout: 8000 });
         } catch {
-          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.navigationTimeout });
+          await page.goto(url, { waitUntil: 'commit', timeout: 15000 });
           await new Promise(r => setTimeout(r, 2500));
           await page.waitForSelector(box, { timeout: 15000 });
         }
@@ -614,8 +624,8 @@ class FacebookService {
         page = await this._createPage(browser, rawCookies);
 
         await page.goto(url, {
-          waitUntil: 'domcontentloaded',
-          timeout: this.navigationTimeout
+          waitUntil: 'commit',
+          timeout: 15000
         });
 
         await new Promise(r => setTimeout(r, 3000));
