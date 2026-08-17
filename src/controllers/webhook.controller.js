@@ -104,7 +104,6 @@ class WebhookController {
         const activeCount = allCookies.filter(c => c.status === 'ACTIVE').length;
         const blockedCount = allCookies.filter(c => c.status === 'BLOCKED').length;
 
-        // حساب عدد الصفحات النشطة
         let pagesCount = 0;
         for (const account of allCookies) {
           if (account.pages) {
@@ -298,6 +297,9 @@ class WebhookController {
           const status = page.status === 'ACTIVE' ? '🟢' : '🔴';
           message += `${index + 1}. ${status} ${page.pageName} (${page.pageId})\n`;
           message += `   💬 تعليقات: ${page.commentsCount || 0}\n`;
+          if (page.lastError) {
+            message += `   ⚠️ آخر خطأ: ${page.lastError}\n`;
+          }
         });
 
         await messengerService.sendTextMessage(senderId, message);
@@ -331,6 +333,77 @@ class WebhookController {
             `❌ فشل حذف الصفحة: ${error.message}`
           );
         }
+      }
+
+      // =========================================================
+      // 📝 SHOW ERRORS
+      // =========================================================
+      else if (text === '/اخطاء' || text === '/errors') {
+        const allCookies = await cookieManagerService.getAllCookies();
+        let message = '⚠️ **الأخطاء المسجلة:**\n\n';
+        let hasErrors = false;
+
+        for (const account of allCookies) {
+          // أخطاء الحسابات الشخصية
+          if (account.lastError) {
+            hasErrors = true;
+            message += `👤 **${account.accountName}**\n`;
+            message += `❌ ${account.lastError}\n`;
+            message += `🕐 ${account.lastErrorTime ? new Date(account.lastErrorTime).toLocaleString() : 'غير محدد'}\n\n`;
+          }
+
+          // أخطاء الصفحات
+          if (account.pages && account.pages.length > 0) {
+            for (const page of account.pages) {
+              if (page.lastError) {
+                hasErrors = true;
+                message += `📄 **${page.pageName}** (تابع لـ ${account.accountName})\n`;
+                message += `❌ ${page.lastError}\n`;
+                message += `🕐 ${page.lastErrorTime ? new Date(page.lastErrorTime).toLocaleString() : 'غير محدد'}\n\n`;
+              }
+            }
+          }
+        }
+
+        if (!hasErrors) {
+          message += '✅ لا توجد أخطاء مسجلة.';
+        }
+
+        await messengerService.sendTextMessage(senderId, message);
+      }
+
+      // =========================================================
+      // 🔄 CLEAR ERRORS
+      // =========================================================
+      else if (text === '/مسح_الاخطاء' || text === '/clear_errors') {
+        let cleared = 0;
+
+        const allCookies = await cookieManagerService.getAllCookies();
+        for (const account of allCookies) {
+          if (account.lastError) {
+            await Cookie.findByIdAndUpdate(account._id, {
+              $unset: { lastError: 1, lastErrorTime: 1 }
+            });
+            cleared++;
+          }
+
+          if (account.pages && account.pages.length > 0) {
+            for (const page of account.pages) {
+              if (page.lastError) {
+                await Cookie.findOneAndUpdate(
+                  { _id: account._id, 'pages.pageId': page.pageId },
+                  { $unset: { 'pages.$.lastError': 1, 'pages.$.lastErrorTime': 1 } }
+                );
+                cleared++;
+              }
+            }
+          }
+        }
+
+        await messengerService.sendTextMessage(
+          senderId,
+          `🧹 تم مسح **${cleared}** خطأ مسجل.`
+        );
       }
 
       // =========================================================
@@ -376,7 +449,10 @@ class WebhookController {
           '📄 **أوامر الصفحات:**\n' +
           '📄 /اضافة_صفحة [الحساب] [معرف_الصفحة] [اسم_الصفحة]\n' +
           '📄 /صفحات [اسم_الحساب] - عرض صفحات حساب\n' +
-          '🗑️ /حذف_صفحة [الحساب] [معرف_الصفحة]'
+          '🗑️ /حذف_صفحة [الحساب] [معرف_الصفحة]\n\n' +
+          '⚠️ **أوامر الأخطاء:**\n' +
+          '📝 /اخطاء - عرض جميع الأخطاء المسجلة\n' +
+          '🧹 /مسح_الاخطاء - مسح جميع الأخطاء المسجلة'
         );
       }
 
